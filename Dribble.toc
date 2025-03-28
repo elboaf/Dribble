@@ -1,0 +1,7 @@
+## Interface: 11200
+## Title: Dribble
+## Notes: Simple Druid automation addon
+## Author: YourName
+## Version: 1.0
+
+Dribble.lua
