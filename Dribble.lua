@@ -11,6 +11,8 @@ local HIBERNATE_SPELL = "Hibernate"
 local REJUVENATION_SPELL = "Rejuvenation(Rank 2)"
 local REGROWTH_SPELL = "Regrowth"
 local IS_SPELL = "Insect Swarm"
+local CAT_FORM_SPELL = "Cat Form"
+local PROWL_SPELL = "Prowl"
 
 -- Texture patterns
 local MOTW_TEXTURE = "Regeneration"
@@ -21,8 +23,10 @@ local GOUGE_TEXTURE = "Ability_Gouge"
 local HIBERNATE_TEXTURE = "Spell_Nature_Sleep"
 local REJUVENATION_TEXTURE = "Spell_Nature_Rejuvenation"
 local REGROWTH_TEXTURE = "Spell_Nature_ResistNature"
-local IS_TEXTURE = "Spell_Nature_InsectSwarm "
-
+local IS_TEXTURE = "Spell_Nature_InsectSwarm"
+local CAT_FORM_TEXTURE = "Ability_Druid_CatForm"
+local PROWL_TEXTURE = "Ability_Ambush"
+local STEALTH_TEXTURE = "Ability_Stealth"
 
 -- Healing Configuration
 local HEALING_TOUCH_RANKS = {
@@ -50,6 +54,16 @@ local buffPets = true
 
 local function IsInRange(unit)
     return CheckInteractDistance(unit, 4) -- 30 yard range
+end
+
+local function IsInForm(texturePattern)
+    for i=1,16 do
+        local buffTexture = UnitBuff("player", i)
+        if buffTexture and strfind(buffTexture, texturePattern) then
+            return true
+        end
+    end
+    return false
 end
 
 -- BUFFING (updated to include pets)
@@ -130,6 +144,46 @@ local function HandleGougedTarget()
     return true
 end
 
+local function HandleStealthFollowing()
+    if not followEnabled or UnitAffectingCombat("player") then 
+        return false 
+    end
+    
+    -- Always follow our party member, even in prowl
+    if followEnabled and UnitExists(followTarget) then
+        FollowUnit(followTarget)
+    end
+    
+    -- Check if follow target is no longer stealthed
+    if IsInForm(PROWL_TEXTURE) then
+        if not (UnitExists(followTarget) and HasBuff(followTarget, STEALTH_TEXTURE)) then
+            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Party member left stealth - leaving prowl")
+            CastSpellByName(PROWL_SPELL) -- Cancel prowl
+            return false
+        end
+        return true
+    end
+    
+    -- Check if follow target exists and is stealthed
+    if UnitExists(followTarget) and HasBuff(followTarget, STEALTH_TEXTURE) then
+        -- If not in cat form, cast it first
+        if not IsInForm(CAT_FORM_TEXTURE) then
+            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Following stealthed target - entering Cat Form")
+            CastSpellByName(CAT_FORM_SPELL)
+            return true
+        end
+        
+        -- If in cat form but not prowling, cast prowl
+        if not IsInForm(PROWL_TEXTURE) then
+            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Following stealthed target - entering Prowl")
+            CastSpellByName(PROWL_SPELL)
+            return true
+        end
+    end
+    
+    return false
+end
+
 local function BuffUnit(unit)
     if not UnitExists(unit) or UnitIsDeadOrGhost(unit) or not IsInRange(unit) then
         return false
@@ -188,6 +242,11 @@ local function GetAppropriateHealRank(missingHealth, unit)
 end
 
 local function CheckRejuvenation()
+    -- Break prowl if we need to heal
+    if IsInForm(PROWL_TEXTURE) then
+        return false
+    end
+
     local didHeal = false
     
     -- Check player first
@@ -219,6 +278,11 @@ local function CheckRejuvenation()
 end
 
 local function CheckAndHeal()
+    -- Break prowl if we need to heal
+    if IsInForm(PROWL_TEXTURE) then
+        return false
+    end
+
     local healTarget = nil
     local mostMissingHealth = 0
     local lowestHPPercent = 100
@@ -312,6 +376,12 @@ local function CastDamageSpells()
 end
 
 local function DoDribbleActions()
+    -- 0. Handle stealth following (skip other actions if prowling)
+    if HandleStealthFollowing() then 
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Maintaining stealth with party")
+        return 
+    end
+
     -- 1. Follow first if enabled
     if followEnabled and UnitExists(followTarget) then
         FollowUnit(followTarget)
