@@ -14,6 +14,7 @@ local IS_SPELL = "Insect Swarm"
 local CAT_FORM_SPELL = "Cat Form"
 local PROWL_SPELL = "Prowl"
 local WRATH_SPELL = "Wrath"
+local SWIFTMEND_SPELL = "Swiftmend"
 
 -- Texture patterns
 local MOTW_TEXTURE = "Regeneration"
@@ -43,10 +44,12 @@ local REGROWTH_RANKS = {
     { name = "Regrowth(Rank 2)", amount = 350, mana = 105 }
 }
 
-local HEAL_THRESHOLD_PERCENT = 80    -- HT/Regrowth threshold
-local REJUV_THRESHOLD_PERCENT = 85   -- Rejuv threshold
+local HEAL_THRESHOLD_PERCENT = 70    -- HT/Regrowth threshold
+local REJUV_THRESHOLD_PERCENT = 80   -- Rejuv threshold
+local SWIFTMEND_THRESHOLD_PERCENT = 80 -- Swiftmend threshold
 local MIN_HEAL_AMOUNT = 30           -- Minimum HP missing for direct heals
 local MIN_MANA_DAMAGE = 50           -- Don't DPS below 50% mana
+local SWIFTMEND_COOLDOWN = 15        -- Swiftmend cooldown in seconds
 
 -- Settings
 local followEnabled = true
@@ -60,6 +63,11 @@ local moonfireEnabled = true
 local faerieFireEnabled = true
 local insectSwarmEnabled = true
 local wrathEnabled = true
+local swiftmendEnabled = true
+
+-- Swiftmend tracking
+local swiftmendLastUsed = 0
+local hotTimers = {} -- Tracks HoT expiration times per unit
 
 local function IsInRange(unit)
     return CheckInteractDistance(unit, 4) -- 30 yard range
@@ -220,6 +228,16 @@ local function BuffPartyPets()
     return false
 end
 
+local function RecordHotCast(unit, spellName)
+    if not hotTimers[unit] then hotTimers[unit] = {} end
+    
+    if spellName == REJUVENATION_SPELL then
+        hotTimers[unit].rejuvExpire = GetTime() + 12 -- Rejuv lasts 12 seconds
+    elseif string.find(spellName, "Regrowth") then
+        hotTimers[unit].regrowthExpire = GetTime() + 21 -- Regrowth lasts 21 seconds
+    end
+end
+
 local function GetAppropriateHealRank(missingHealth, unit)
     if regrowthEnabled then
         for i = table.getn(REGROWTH_RANKS), 1, -1 do
@@ -244,6 +262,81 @@ local function GetAppropriateHealRank(missingHealth, unit)
     return nil
 end
 
+local function CheckUnitSwiftmend(unit)
+    if not UnitExists(unit) or UnitIsDeadOrGhost(unit) or not IsInRange(unit) then
+        return false
+    end
+    
+    local currentTime = GetTime()
+    local hpPercent = (UnitHealth(unit) / UnitHealthMax(unit)) * 100
+    
+    -- Only consider Swiftmend if health is below threshold
+    if hpPercent > SWIFTMEND_THRESHOLD_PERCENT then
+        return false
+    end
+    
+    -- Check if we have an active HoT that's about to expire
+    if hotTimers[unit] then
+        local rejuvActive = HasBuff(unit, REJUVENATION_TEXTURE)
+        local regrowthActive = HasBuff(unit, REGROWTH_TEXTURE)
+        
+        -- Prefer to consume Regrowth if it's about to expire
+        if regrowthActive and hotTimers[unit].regrowthExpire and 
+           (hotTimers[unit].regrowthExpire - currentTime < 3) then
+            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Swiftmend on %s (Regrowth expiring)", 
+                unit=="player" and "self" or UnitName(unit)))
+            CastSpellByName(SWIFTMEND_SPELL)
+            SpellTargetUnit(unit)
+            swiftmendLastUsed = GetTime()
+            return true
+        end
+        
+        -- Otherwise consume Rejuv if it's about to expire
+        if rejuvActive and hotTimers[unit].rejuvExpire and 
+           (hotTimers[unit].rejuvExpire - currentTime < 3) then
+            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Swiftmend on %s (Rejuvenation expiring)", 
+                unit=="player" and "self" or UnitName(unit)))
+            CastSpellByName(SWIFTMEND_SPELL)
+            SpellTargetUnit(unit)
+            swiftmendLastUsed = GetTime()
+            return true
+        end
+        
+        -- Emergency case - health is very low and we have any HoT
+        if hpPercent < 40 and (rejuvActive or regrowthActive) then
+            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Emergency Swiftmend on %s (%d%% HP)", 
+                unit=="player" and "self" or UnitName(unit), math.floor(hpPercent)))
+            CastSpellByName(SWIFTMEND_SPELL)
+            SpellTargetUnit(unit)
+            swiftmendLastUsed = GetTime()
+            return true
+        end
+    end
+    
+    return false
+end
+
+local function CheckSwiftmend()
+    if not swiftmendEnabled or (GetTime() - swiftmendLastUsed) < SWIFTMEND_COOLDOWN then
+        return false
+    end
+    
+    if UnitMana("player") < 67 then -- Swiftmend costs 67 mana
+        return false
+    end
+    
+    -- Check player first
+    if CheckUnitSwiftmend("player") then return true end
+    
+    -- Check party members
+    for i=1,4 do
+        local unit = "party"..i
+        if CheckUnitSwiftmend(unit) then return true end
+    end
+    
+    return false
+end
+
 local function CheckRejuvenation()
     if IsInForm(PROWL_TEXTURE) then
         return false
@@ -261,6 +354,7 @@ local function CheckRejuvenation()
             DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Rejuvenation on self (%d%%)", math.floor(hpPercent)))
             CastSpellByName(REJUVENATION_SPELL)
             SpellTargetUnit("player")
+            RecordHotCast("player", REJUVENATION_SPELL)
             didHeal = true
         end
     end
@@ -273,6 +367,7 @@ local function CheckRejuvenation()
                 DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Rejuvenation on %s (%d%%)", UnitName(unit), math.floor(hpPercent)))
                 CastSpellByName(REJUVENATION_SPELL)
                 SpellTargetUnit(unit)
+                RecordHotCast(unit, REJUVENATION_SPELL)
                 didHeal = true
             end
         end
@@ -333,6 +428,12 @@ local function CheckAndHeal()
             spellName))
         CastSpellByName(spellName)
         SpellTargetUnit(healTarget)
+        
+        -- Record if we cast Regrowth
+        if string.find(spellName, "Regrowth") then
+            RecordHotCast(healTarget, spellName)
+        end
+        
         return true
     end
     return false
@@ -397,6 +498,8 @@ local function DoDribbleActions()
     if followEnabled and UnitExists(followTarget) then
         FollowUnit(followTarget)
     end
+
+    if CheckSwiftmend() then return end
 
     if CheckRejuvenation() then return end
 
@@ -515,6 +618,11 @@ local function ToggleWrath()
     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Wrath "..(wrathEnabled and "enabled" or "disabled"))
 end
 
+local function ToggleSwiftmend()
+    swiftmendEnabled = not swiftmendEnabled
+    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Swiftmend "..(swiftmendEnabled and "enabled" or "disabled"))
+end
+
 -- Slash commands
 SLASH_DRIBBLE1 = "/dribble"
 SLASH_DRIBBLEFOLLOW1 = "/dribblefollow"
@@ -528,6 +636,7 @@ SLASH_DRIBBLEMOONFIRE1 = "/dribblemoonfire"
 SLASH_DRIBBLEFAERIEFIRE1 = "/dribblefaeriefire"
 SLASH_DRIBBLEINSECTSWARM1 = "/dribbleinsectswarm"
 SLASH_DRIBBLEWRATH1 = "/dribblewrath"
+SLASH_DRIBBLESWIFTMEND1 = "/dribbleswiftmend"
 
 SlashCmdList["DRIBBLE"] = DoDribbleActions
 SlashCmdList["DRIBBLEFOLLOW"] = ToggleFollowMode
@@ -541,3 +650,4 @@ SlashCmdList["DRIBBLEMOONFIRE"] = ToggleMoonfire
 SlashCmdList["DRIBBLEFAERIEFIRE"] = ToggleFaerieFire
 SlashCmdList["DRIBBLEINSECTSWARM"] = ToggleInsectSwarm
 SlashCmdList["DRIBBLEWRATH"] = ToggleWrath
+SlashCmdList["DRIBBLESWIFTMEND"] = ToggleSwiftmend
