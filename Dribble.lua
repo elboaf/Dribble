@@ -8,6 +8,8 @@ local MOONFIRE_SPELL = "Moonfire"
 local HEALING_TOUCH_SPELL = "Healing Touch"
 local FAERIE_FIRE_SPELL = "Faerie Fire"
 local HIBERNATE_SPELL = "Hibernate"
+local REJUVENATION_SPELL = "Rejuvenation(Rank 2)"
+local REGROWTH_SPELL = "Regrowth"
 
 -- Texture patterns
 local MOTW_TEXTURE = "Regeneration"
@@ -15,23 +17,36 @@ local THORNS_TEXTURE = "Thorns"
 local MOONFIRE_TEXTURE = "StarFall"
 local FAERIE_FIRE_TEXTURE = "Spell_Nature_FaerieFire"
 local GOUGE_TEXTURE = "Ability_Gouge"
-local HIBERNATE_TEXTURE = "Spell_Nature_Sleep"  -- New constant for Hibernate debuff
+local HIBERNATE_TEXTURE = "Spell_Nature_Sleep"
+local REJUVENATION_TEXTURE = "Spell_Nature_Rejuvenation"
+local REGROWTH_TEXTURE = "Spell_Nature_ResistNature"
 
--- Constants
-local HEAL_THRESHOLD = 80    -- Heal below 70% HP
-local MIN_MANA_DAMAGE = 50   -- Don't DPS below 50% mana (Moonfire only)
+-- Healing Configuration
+local HEALING_TOUCH_RANKS = {
+    { name = "Healing Touch(Rank 1)", amount = 90, mana = 30 },
+    { name = "Healing Touch(Rank 2)", amount = 220, mana = 55 },
+    { name = "Healing Touch(Rank 3)", amount = 375, mana = 100 }
+}
+
+local REGROWTH_RANKS = {
+    { name = "Regrowth(Rank 1)", amount = 200, mana = 60 },
+    { name = "Regrowth(Rank 2)", amount = 400, mana = 105 }
+}
+
+local HEAL_THRESHOLD_PERCENT = 80    -- HT/Regrowth threshold
+local REJUV_THRESHOLD_PERCENT = 85   -- Rejuv threshold
+local MIN_HEAL_AMOUNT = 30           -- Minimum HP missing for direct heals
+local MIN_MANA_DAMAGE = 50           -- Don't DPS below 50% mana
 
 -- Settings
-local followEnabled = true   -- Follow mode enabled by default
-local damageAssistEnabled = true -- Damage assist enabled by default
-local followTarget = "party1" -- Default follow target
-local buffPets = true        -- Buff pets enabled by default
+local followEnabled = true
+local damageAssistEnabled = true
+local followTarget = "party1"
+local buffPets = true
 
 local function IsInRange(unit)
     return CheckInteractDistance(unit, 4) -- 30 yard range
 end
-
-
 
 -- BUFFING (updated to include pets)
 local function HasBuff(unit, texturePattern)
@@ -61,7 +76,6 @@ local function IsTargetGouged()
         return false
     end
     
-    -- Check if target is beast or dragonkin
     local creatureType = UnitCreatureType("target")
     if creatureType ~= "Beast" and creatureType ~= "Dragonkin" then
         return false
@@ -75,7 +89,6 @@ local function IsTargetHibernated()
         return false
     end
     
-    -- Check if target is beast or dragonkin (Hibernate only works on these)
     local creatureType = UnitCreatureType("target")
     if creatureType ~= "Beast" and creatureType ~= "Dragonkin" then
         return false
@@ -89,31 +102,25 @@ local function HandleGougedTarget()
         return false
     end
     
-    -- Don't try to Hibernate if already hibernated
     if IsTargetHibernated() then
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is already hibernated")
         return false
     end
     
-    -- Store current target
     local targetName = UnitName("target")
     
-    -- Clear and re-target to refresh target status
     ClearTarget()
     TargetLastTarget()
     
-    -- Verify we got the same target back
     if not UnitExists("target") or UnitName("target") ~= targetName then
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Failed to re-acquire target")
         return false
     end
     
-    -- Check if we can cast Hibernate (mana check, etc.)
-    if UnitMana("player") < 10 then  -- Hibernate costs 10 mana in 1.12
+    if UnitMana("player") < 10 then
         return false
     end
     
-    -- Cast Hibernate
     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Casting Hibernate on gouged target")
     CastSpellByName(HIBERNATE_SPELL)
     return true
@@ -141,7 +148,6 @@ local function BuffUnit(unit)
     return false
 end
 
--- New function to buff party pets
 local function BuffPartyPets()
     if not buffPets then return false end
     
@@ -156,16 +162,74 @@ local function BuffPartyPets()
     return false
 end
 
--- HEALING (always available, no mana restriction)
+local function GetAppropriateHealRank(missingHealth, unit)
+    -- First try to find suitable Regrowth
+    for i = table.getn(REGROWTH_RANKS), 1, -1 do
+        local rank = REGROWTH_RANKS[i]
+        if missingHealth >= rank.amount and UnitMana("player") >= rank.mana and not HasBuff(unit, REGROWTH_TEXTURE) then
+            return rank.name
+        end
+    end
+    
+    -- Fall back to Healing Touch if no suitable Regrowth or already has Regrowth
+    local bestRank = HEALING_TOUCH_RANKS[1]
+    for i = 1, table.getn(HEALING_TOUCH_RANKS) do
+        local rank = HEALING_TOUCH_RANKS[i]
+        if missingHealth >= rank.amount and UnitMana("player") >= rank.mana then
+            bestRank = rank
+        end
+    end
+    
+    return bestRank.name
+end
+
+local function CheckRejuvenation()
+    local didHeal = false
+    
+    -- Check player first
+    if not UnitIsDeadOrGhost("player") and IsInRange("player") then
+        local hpPercent = (UnitHealth("player") / UnitHealthMax("player")) * 100
+        if hpPercent < REJUV_THRESHOLD_PERCENT and not HasBuff("player", REJUVENATION_TEXTURE) then
+            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Rejuvenation on self (%d%%)", math.floor(hpPercent)))
+            CastSpellByName(REJUVENATION_SPELL)
+            SpellTargetUnit("player")
+            didHeal = true
+        end
+    end
+
+    -- Check party members
+    for i=1,4 do
+        local unit = "party"..i
+        if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and IsInRange(unit) then
+            local hpPercent = (UnitHealth(unit) / UnitHealthMax(unit)) * 100
+            if hpPercent < REJUV_THRESHOLD_PERCENT and not HasBuff(unit, REJUVENATION_TEXTURE) then
+                DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Rejuvenation on %s (%d%%)", UnitName(unit), math.floor(hpPercent)))
+                CastSpellByName(REJUVENATION_SPELL)
+                SpellTargetUnit(unit)
+                didHeal = true
+            end
+        end
+    end
+    
+    return didHeal
+end
+
 local function CheckAndHeal()
-    local healTarget, lowestHP = nil, HEAL_THRESHOLD
+    local healTarget = nil
+    local mostMissingHealth = 0
+    local lowestHPPercent = 100
 
     -- Check player
     if not UnitIsDeadOrGhost("player") and IsInRange("player") then
-        local hp = UnitHealth("player")/UnitHealthMax("player")*100
-        if hp < lowestHP then
+        local currentHP = UnitHealth("player")
+        local maxHP = UnitHealthMax("player")
+        local missing = maxHP - currentHP
+        local hpPercent = (currentHP / maxHP) * 100
+        
+        if hpPercent < lowestHPPercent then
+            lowestHPPercent = hpPercent
+            mostMissingHealth = missing
             healTarget = "player"
-            lowestHP = hp
         end
     end
 
@@ -173,26 +237,33 @@ local function CheckAndHeal()
     for i=1,4 do
         local unit = "party"..i
         if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and IsInRange(unit) then
-            local hp = UnitHealth(unit)/UnitHealthMax(unit)*100
-            if hp < lowestHP then
+            local currentHP = UnitHealth(unit)
+            local maxHP = UnitHealthMax(unit)
+            local missing = maxHP - currentHP
+            local hpPercent = (currentHP / maxHP) * 100
+            
+            if hpPercent < lowestHPPercent then
+                lowestHPPercent = hpPercent
+                mostMissingHealth = missing
                 healTarget = unit
-                lowestHP = hp
             end
         end
     end
 
-    if healTarget then
-        DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Healing %s (%d%%)", 
+    if healTarget and lowestHPPercent < HEAL_THRESHOLD_PERCENT and mostMissingHealth >= MIN_HEAL_AMOUNT then
+        local spellName = GetAppropriateHealRank(mostMissingHealth, healTarget)
+        DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Healing %s (%d%% HP, missing %d) with %s", 
             healTarget=="player" and "self" or UnitName(healTarget), 
-            math.floor(lowestHP)))
-        CastSpellByName(HEALING_TOUCH_SPELL)
+            math.floor(lowestHPPercent),
+            mostMissingHealth,
+            spellName))
+        CastSpellByName(spellName)
         SpellTargetUnit(healTarget)
         return true
     end
     return false
 end
 
--- DAMAGE ASSIST (only if above 50% mana)
 local function CastDamageSpells()
     if not damageAssistEnabled then return false end
     if UnitMana("player")/UnitManaMax("player")*100 < MIN_MANA_DAMAGE then
@@ -206,71 +277,68 @@ local function CastDamageSpells()
             if UnitExists(target) and UnitCanAttack("player", target) and 
                not UnitIsDeadOrGhost(target) and IsInRange(target) then
                
-                -- Don't attack if target is hibernated
                 if IsTargetHibernated() then
                     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is hibernated - skipping damage")
                     return false
                 end
                 
-                -- First check for Faerie Fire
                 if not HasDebuff(target, FAERIE_FIRE_TEXTURE) then
                     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Faerie Fire on "..UnitName(target))
                     AssistUnit(member)
                     CastSpellByName(FAERIE_FIRE_SPELL)
                     return true
                 end
-                
-                -- Then check for Moonfire (only if not hibernated)
                 if not HasDebuff(target, MOONFIRE_TEXTURE) and not IsTargetHibernated() then
                     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Moonfire on "..UnitName(target))
                     AssistUnit(member)
                     CastSpellByName(MOONFIRE_SPELL)
                     return true
                 end
+                
             end
         end
     end
     return false
 end
 
--- MAIN FUNCTION (updated priority)
 local function DoDribbleActions()
     -- 1. Follow first if enabled
     if followEnabled and UnitExists(followTarget) then
         FollowUnit(followTarget)
     end
 
-    -- 2. Healing (always priority)
+    -- 2. Rejuvenation checks
+    if CheckRejuvenation() then return end
+
+    -- 3. Emergency Healing (Regrowth or Healing Touch)
     if CheckAndHeal() then return end
 
-    -- 3. Handle gouged targets (new priority)
+    -- 4. Handle gouged targets
     if UnitExists("target") and IsTargetGouged() then
         if HandleGougedTarget() then return end
     end
 
-    -- 4. Buffing (players first, then pets)
+    -- 5. Buffing (players first, then pets)
     if BuffUnit("player") then return end
     for i=1,4 do
         if BuffUnit("party"..i) then return end
     end
     if BuffPartyPets() then return end
 
-    -- 5. Damage only if mana permits and damage assist is enabled
+    -- 6. Damage only if mana permits
     if CastDamageSpells() then return end
 
     DEFAULT_CHAT_FRAME:AddMessage("Dribble: All actions complete")
 end
 
--- Toggle follow mode
 local function ToggleFollowMode()
     followEnabled = not followEnabled
     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Follow mode "..(followEnabled and "enabled" or "disabled"))
     if not followEnabled then
-        FollowUnit("player") -- Stop following if we're toggling off
+        FollowUnit("player")
     end
 end
 
--- Get party unit from target
 local function GetPartyUnitFromTarget()
     if not UnitExists("target") then
         return nil
@@ -286,11 +354,9 @@ local function GetPartyUnitFromTarget()
     return nil
 end
 
--- Set follow target
 local function SetFollowTarget(msg)
     local targetNum
     if msg == "" then
-        -- No argument provided, try to detect from target
         local partyUnit = GetPartyUnitFromTarget()
         if partyUnit then
             followTarget = partyUnit
@@ -318,13 +384,11 @@ local function SetFollowTarget(msg)
     end
 end
 
--- Toggle damage assist mode
 local function ToggleDamageAssistMode()
     damageAssistEnabled = not damageAssistEnabled
     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Damage assist mode "..(damageAssistEnabled and "enabled" or "disabled"))
 end
 
--- Toggle pet buffing mode (new function)
 local function TogglePetBuffingMode()
     buffPets = not buffPets
     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Pet buffing "..(buffPets and "enabled" or "disabled"))
