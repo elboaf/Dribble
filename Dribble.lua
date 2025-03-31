@@ -10,6 +10,7 @@ local FAERIE_FIRE_SPELL = "Faerie Fire"
 local HIBERNATE_SPELL = "Hibernate"
 local REJUVENATION_SPELL = "Rejuvenation(Rank 2)"
 local REGROWTH_SPELL = "Regrowth"
+local IS_SPELL = "Insect Swarm"
 
 -- Texture patterns
 local MOTW_TEXTURE = "Regeneration"
@@ -20,12 +21,15 @@ local GOUGE_TEXTURE = "Ability_Gouge"
 local HIBERNATE_TEXTURE = "Spell_Nature_Sleep"
 local REJUVENATION_TEXTURE = "Spell_Nature_Rejuvenation"
 local REGROWTH_TEXTURE = "Spell_Nature_ResistNature"
+local IS_TEXTURE = "Spell_Nature_InsectSwarm "
+
 
 -- Healing Configuration
 local HEALING_TOUCH_RANKS = {
     { name = "Healing Touch(Rank 1)", amount = 90, mana = 30 },
     { name = "Healing Touch(Rank 2)", amount = 220, mana = 55 },
-    { name = "Healing Touch(Rank 3)", amount = 375, mana = 100 }
+    { name = "Healing Touch(Rank 3)", amount = 375, mana = 100 },
+    { name = "Healing Touch(Rank 4)", amount = 475, mana = 185 }
 }
 
 local REGROWTH_RANKS = {
@@ -286,6 +290,12 @@ local function CastDamageSpells()
                     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Faerie Fire on "..UnitName(target))
                     AssistUnit(member)
                     CastSpellByName(FAERIE_FIRE_SPELL)
+                    return true
+                end
+                if not HasDebuff(target, IS_TEXTURE) and not IsTargetHibernated() then
+                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Insect Swarm on "..UnitName(target))
+                    AssistUnit(member)
+                    CastSpellByName(IS_SPELL)
                     return true
                 end
                 if not HasDebuff(target, MOONFIRE_TEXTURE) and not IsTargetHibernated() then
