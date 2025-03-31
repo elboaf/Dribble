@@ -8,11 +8,12 @@ local MOONFIRE_SPELL = "Moonfire"
 local HEALING_TOUCH_SPELL = "Healing Touch"
 local FAERIE_FIRE_SPELL = "Faerie Fire"
 local HIBERNATE_SPELL = "Hibernate"
-local REJUVENATION_SPELL = "Rejuvenation(Rank 2)"
+local REJUVENATION_SPELL = "Rejuvenation"
 local REGROWTH_SPELL = "Regrowth"
 local IS_SPELL = "Insect Swarm"
 local CAT_FORM_SPELL = "Cat Form"
 local PROWL_SPELL = "Prowl"
+local WRATH_SPELL = "Wrath"
 
 -- Texture patterns
 local MOTW_TEXTURE = "Regeneration"
@@ -27,18 +28,19 @@ local IS_TEXTURE = "Spell_Nature_InsectSwarm"
 local CAT_FORM_TEXTURE = "Ability_Druid_CatForm"
 local PROWL_TEXTURE = "Ability_Ambush"
 local STEALTH_TEXTURE = "Ability_Stealth"
+local WRATH_TEXTURE = "Spell_Nature_Earthquake"
 
 -- Healing Configuration
 local HEALING_TOUCH_RANKS = {
-    { name = "Healing Touch(Rank 1)", amount = 90, mana = 30 },
-    { name = "Healing Touch(Rank 2)", amount = 220, mana = 55 },
-    { name = "Healing Touch(Rank 3)", amount = 375, mana = 100 },
-    { name = "Healing Touch(Rank 4)", amount = 475, mana = 185 }
+    { name = "Healing Touch(Rank 1)", amount = 60, mana = 25 },
+    { name = "Healing Touch(Rank 2)", amount = 130, mana = 55 },
+    { name = "Healing Touch(Rank 3)", amount = 275, mana = 110 },
+    { name = "Healing Touch(Rank 4)", amount = 450, mana = 185 }
 }
 
 local REGROWTH_RANKS = {
-    { name = "Regrowth(Rank 1)", amount = 200, mana = 60 },
-    { name = "Regrowth(Rank 2)", amount = 400, mana = 105 }
+    { name = "Regrowth(Rank 1)", amount = 200, mana = 96 },
+    { name = "Regrowth(Rank 2)", amount = 350, mana = 105 }
 }
 
 local HEAL_THRESHOLD_PERCENT = 80    -- HT/Regrowth threshold
@@ -51,6 +53,13 @@ local followEnabled = true
 local damageAssistEnabled = true
 local followTarget = "party1"
 local buffPets = true
+local rejuvEnabled = true
+local regrowthEnabled = true
+local healingTouchEnabled = true
+local moonfireEnabled = true
+local faerieFireEnabled = true
+local insectSwarmEnabled = true
+local wrathEnabled = true
 
 local function IsInRange(unit)
     return CheckInteractDistance(unit, 4) -- 30 yard range
@@ -66,7 +75,6 @@ local function IsInForm(texturePattern)
     return false
 end
 
--- BUFFING (updated to include pets)
 local function HasBuff(unit, texturePattern)
     if not UnitExists(unit) or not IsInRange(unit) then return true end
     for i=1,16 do
@@ -103,7 +111,7 @@ local function IsTargetGouged()
 end
 
 local function IsTargetHibernated()
-    if not UnitExists("target") or not UnitCanAttack("player", "target") then
+    if not UnitExists("target") then
         return false
     end
     
@@ -126,10 +134,7 @@ local function HandleGougedTarget()
     end
     
     local targetName = UnitName("target")
-    
-    ClearTarget()
-    TargetLastTarget()
-    
+   
     if not UnitExists("target") or UnitName("target") ~= targetName then
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Failed to re-acquire target")
         return false
@@ -145,35 +150,30 @@ local function HandleGougedTarget()
 end
 
 local function HandleStealthFollowing()
-    if not followEnabled or UnitAffectingCombat("player") then 
+    if not followEnabled or UnitAffectingCombat("player") or not IsInRange(followTarget) then 
         return false 
     end
     
-    -- Always follow our party member, even in prowl
     if followEnabled and UnitExists(followTarget) then
         FollowUnit(followTarget)
     end
     
-    -- Check if follow target is no longer stealthed
     if IsInForm(PROWL_TEXTURE) then
         if not (UnitExists(followTarget) and HasBuff(followTarget, STEALTH_TEXTURE)) then
             DEFAULT_CHAT_FRAME:AddMessage("Dribble: Party member left stealth - leaving prowl")
-            CastSpellByName(PROWL_SPELL) -- Cancel prowl
+            CastSpellByName(PROWL_SPELL)
             return false
         end
         return true
     end
     
-    -- Check if follow target exists and is stealthed
     if UnitExists(followTarget) and HasBuff(followTarget, STEALTH_TEXTURE) then
-        -- If not in cat form, cast it first
         if not IsInForm(CAT_FORM_TEXTURE) then
             DEFAULT_CHAT_FRAME:AddMessage("Dribble: Following stealthed target - entering Cat Form")
             CastSpellByName(CAT_FORM_SPELL)
             return true
         end
         
-        -- If in cat form but not prowling, cast prowl
         if not IsInForm(PROWL_TEXTURE) then
             DEFAULT_CHAT_FRAME:AddMessage("Dribble: Following stealthed target - entering Prowl")
             CastSpellByName(PROWL_SPELL)
@@ -221,35 +221,40 @@ local function BuffPartyPets()
 end
 
 local function GetAppropriateHealRank(missingHealth, unit)
-    -- First try to find suitable Regrowth
-    for i = table.getn(REGROWTH_RANKS), 1, -1 do
-        local rank = REGROWTH_RANKS[i]
-        if missingHealth >= rank.amount and UnitMana("player") >= rank.mana and not HasBuff(unit, REGROWTH_TEXTURE) then
-            return rank.name
+    if regrowthEnabled then
+        for i = table.getn(REGROWTH_RANKS), 1, -1 do
+            local rank = REGROWTH_RANKS[i]
+            if missingHealth >= rank.amount and UnitMana("player") >= rank.mana and not HasBuff(unit, REGROWTH_TEXTURE) then
+                return rank.name
+            end
         end
     end
     
-    -- Fall back to Healing Touch if no suitable Regrowth or already has Regrowth
-    local bestRank = HEALING_TOUCH_RANKS[1]
-    for i = 1, table.getn(HEALING_TOUCH_RANKS) do
-        local rank = HEALING_TOUCH_RANKS[i]
-        if missingHealth >= rank.amount and UnitMana("player") >= rank.mana then
-            bestRank = rank
+    if healingTouchEnabled then
+        local bestRank = HEALING_TOUCH_RANKS[1]
+        for i = 1, table.getn(HEALING_TOUCH_RANKS) do
+            local rank = HEALING_TOUCH_RANKS[i]
+            if missingHealth >= rank.amount and UnitMana("player") >= rank.mana then
+                bestRank = rank
+            end
         end
+        return bestRank.name
     end
     
-    return bestRank.name
+    return nil
 end
 
 local function CheckRejuvenation()
-    -- Break prowl if we need to heal
     if IsInForm(PROWL_TEXTURE) then
+        return false
+    end
+    
+    if not rejuvEnabled then
         return false
     end
 
     local didHeal = false
     
-    -- Check player first
     if not UnitIsDeadOrGhost("player") and IsInRange("player") then
         local hpPercent = (UnitHealth("player") / UnitHealthMax("player")) * 100
         if hpPercent < REJUV_THRESHOLD_PERCENT and not HasBuff("player", REJUVENATION_TEXTURE) then
@@ -260,7 +265,6 @@ local function CheckRejuvenation()
         end
     end
 
-    -- Check party members
     for i=1,4 do
         local unit = "party"..i
         if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and IsInRange(unit) then
@@ -278,7 +282,6 @@ local function CheckRejuvenation()
 end
 
 local function CheckAndHeal()
-    -- Break prowl if we need to heal
     if IsInForm(PROWL_TEXTURE) then
         return false
     end
@@ -287,7 +290,6 @@ local function CheckAndHeal()
     local mostMissingHealth = 0
     local lowestHPPercent = 100
 
-    -- Check player
     if not UnitIsDeadOrGhost("player") and IsInRange("player") then
         local currentHP = UnitHealth("player")
         local maxHP = UnitHealthMax("player")
@@ -301,7 +303,6 @@ local function CheckAndHeal()
         end
     end
 
-    -- Check party
     for i=1,4 do
         local unit = "party"..i
         if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and IsInRange(unit) then
@@ -320,6 +321,11 @@ local function CheckAndHeal()
 
     if healTarget and lowestHPPercent < HEAL_THRESHOLD_PERCENT and mostMissingHealth >= MIN_HEAL_AMOUNT then
         local spellName = GetAppropriateHealRank(mostMissingHealth, healTarget)
+        
+        if not spellName then
+            return false
+        end
+        
         DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Healing %s (%d%% HP, missing %d) with %s", 
             healTarget=="player" and "self" or UnitName(healTarget), 
             math.floor(lowestHPPercent),
@@ -342,33 +348,40 @@ local function CastDamageSpells()
         local member = "party"..i
         if UnitExists(member) then
             local target = member.."target"
-            if UnitExists(target) and UnitCanAttack("player", target) and 
-               not UnitIsDeadOrGhost(target) and IsInRange(target) then
-               
-                if IsTargetHibernated() then
-                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is hibernated - skipping damage")
-                    return false
+            if UnitExists(target) and UnitCanAttack("player", target) and not UnitIsDeadOrGhost(target) then
+                TargetUnit(target)
+
+                if IsInRange(target) then
+                    if IsTargetHibernated() then
+                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is hibernated - skipping damage")
+                        return false
+                    end
+                    
+                    if faerieFireEnabled and not HasDebuff(target, FAERIE_FIRE_TEXTURE) then
+                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Faerie Fire on "..UnitName(target))
+                        AssistUnit(member)
+                        CastSpellByName(FAERIE_FIRE_SPELL)
+                        return true
+                    end
+                    if insectSwarmEnabled and not HasDebuff(target, IS_TEXTURE) and not IsTargetHibernated() then
+                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Insect Swarm on "..UnitName(target))
+                        AssistUnit(member)
+                        CastSpellByName(IS_SPELL)
+                        return true
+                    end
+                    if moonfireEnabled and not HasDebuff(target, MOONFIRE_TEXTURE) and not IsTargetHibernated() then
+                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Moonfire on "..UnitName(target))
+                        AssistUnit(member)
+                        CastSpellByName(MOONFIRE_SPELL)
+                        return true
+                    end
+                    if wrathEnabled and not IsTargetHibernated() then
+                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Casting Wrath on "..UnitName(target))
+                        AssistUnit(member)
+                        CastSpellByName(WRATH_SPELL)
+                        return true
+                    end
                 end
-                
-                if not HasDebuff(target, FAERIE_FIRE_TEXTURE) then
-                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Faerie Fire on "..UnitName(target))
-                    AssistUnit(member)
-                    CastSpellByName(FAERIE_FIRE_SPELL)
-                    return true
-                end
-                if not HasDebuff(target, IS_TEXTURE) and not IsTargetHibernated() then
-                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Insect Swarm on "..UnitName(target))
-                    AssistUnit(member)
-                    CastSpellByName(IS_SPELL)
-                    return true
-                end
-                if not HasDebuff(target, MOONFIRE_TEXTURE) and not IsTargetHibernated() then
-                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Moonfire on "..UnitName(target))
-                    AssistUnit(member)
-                    CastSpellByName(MOONFIRE_SPELL)
-                    return true
-                end
-                
             end
         end
     end
@@ -376,36 +389,29 @@ local function CastDamageSpells()
 end
 
 local function DoDribbleActions()
-    -- 0. Handle stealth following (skip other actions if prowling)
     if HandleStealthFollowing() then 
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Maintaining stealth with party")
         return 
     end
 
-    -- 1. Follow first if enabled
     if followEnabled and UnitExists(followTarget) then
         FollowUnit(followTarget)
     end
 
-    -- 2. Rejuvenation checks
     if CheckRejuvenation() then return end
 
-    -- 3. Emergency Healing (Regrowth or Healing Touch)
     if CheckAndHeal() then return end
 
-    -- 4. Handle gouged targets
     if UnitExists("target") and IsTargetGouged() then
         if HandleGougedTarget() then return end
     end
 
-    -- 5. Buffing (players first, then pets)
     if BuffUnit("player") then return end
     for i=1,4 do
         if BuffUnit("party"..i) then return end
     end
     if BuffPartyPets() then return end
 
-    -- 6. Damage only if mana permits
     if CastDamageSpells() then return end
 
     DEFAULT_CHAT_FRAME:AddMessage("Dribble: All actions complete")
@@ -474,18 +480,64 @@ local function TogglePetBuffingMode()
     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Pet buffing "..(buffPets and "enabled" or "disabled"))
 end
 
+local function ToggleRejuvenation()
+    rejuvEnabled = not rejuvEnabled
+    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Rejuvenation "..(rejuvEnabled and "enabled" or "disabled"))
+end
+
+local function ToggleRegrowth()
+    regrowthEnabled = not regrowthEnabled
+    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Regrowth "..(regrowthEnabled and "enabled" or "disabled"))
+end
+
+local function ToggleHealingTouch()
+    healingTouchEnabled = not healingTouchEnabled
+    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Healing Touch "..(healingTouchEnabled and "enabled" or "disabled"))
+end
+
+local function ToggleMoonfire()
+    moonfireEnabled = not moonfireEnabled
+    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Moonfire "..(moonfireEnabled and "enabled" or "disabled"))
+end
+
+local function ToggleFaerieFire()
+    faerieFireEnabled = not faerieFireEnabled
+    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Faerie Fire "..(faerieFireEnabled and "enabled" or "disabled"))
+end
+
+local function ToggleInsectSwarm()
+    insectSwarmEnabled = not insectSwarmEnabled
+    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Insect Swarm "..(insectSwarmEnabled and "enabled" or "disabled"))
+end
+
+local function ToggleWrath()
+    wrathEnabled = not wrathEnabled
+    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Wrath "..(wrathEnabled and "enabled" or "disabled"))
+end
+
 -- Slash commands
 SLASH_DRIBBLE1 = "/dribble"
-SlashCmdList["DRIBBLE"] = DoDribbleActions
-
 SLASH_DRIBBLEFOLLOW1 = "/dribblefollow"
-SlashCmdList["DRIBBLEFOLLOW"] = ToggleFollowMode
-
 SLASH_DRIBBLEFOLLOWTARGET1 = "/dribblefollowtarget"
-SlashCmdList["DRIBBLEFOLLOWTARGET"] = SetFollowTarget
-
 SLASH_DRIBBLEDPS1 = "/dribbledps"
-SlashCmdList["DRIBBLEDPS"] = ToggleDamageAssistMode
-
 SLASH_DRIBBLEPETBUFFS1 = "/dribblepetbuffs"
+SLASH_DRIBBLEREJUV1 = "/dribblerejuv"
+SLASH_DRIBBLEREGROWTH1 = "/dribbleregrowth"
+SLASH_DRIBBLEHT1 = "/dribbleht"
+SLASH_DRIBBLEMOONFIRE1 = "/dribblemoonfire"
+SLASH_DRIBBLEFAERIEFIRE1 = "/dribblefaeriefire"
+SLASH_DRIBBLEINSECTSWARM1 = "/dribbleinsectswarm"
+SLASH_DRIBBLEWRATH1 = "/dribblewrath"
+
+SlashCmdList["DRIBBLE"] = DoDribbleActions
+SlashCmdList["DRIBBLEFOLLOW"] = ToggleFollowMode
+SlashCmdList["DRIBBLEFOLLOWTARGET"] = SetFollowTarget
+SlashCmdList["DRIBBLEDPS"] = ToggleDamageAssistMode
 SlashCmdList["DRIBBLEPETBUFFS"] = TogglePetBuffingMode
+SlashCmdList["DRIBBLEREJUV"] = ToggleRejuvenation
+SlashCmdList["DRIBBLEREGROWTH"] = ToggleRegrowth
+SlashCmdList["DRIBBLEHT"] = ToggleHealingTouch
+SlashCmdList["DRIBBLEMOONFIRE"] = ToggleMoonfire
+SlashCmdList["DRIBBLEFAERIEFIRE"] = ToggleFaerieFire
+SlashCmdList["DRIBBLEINSECTSWARM"] = ToggleInsectSwarm
+SlashCmdList["DRIBBLEWRATH"] = ToggleWrath
