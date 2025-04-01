@@ -31,22 +31,54 @@ local PROWL_TEXTURE = "Ability_Ambush"
 local STEALTH_TEXTURE = "Ability_Stealth"
 local WRATH_TEXTURE = "Spell_Nature_Earthquake"
 
+local expectedHoTHealing = {} -- Tracks expected HoT healing per unit
+
 -- Healing Configuration
 local HEALING_TOUCH_RANKS = {
-    { name = "Healing Touch(Rank 1)", amount = 60, mana = 25 },
-    { name = "Healing Touch(Rank 2)", amount = 130, mana = 55 },
-    { name = "Healing Touch(Rank 3)", amount = 275, mana = 110 },
-    { name = "Healing Touch(Rank 4)", amount = 450, mana = 185 }
+    { name = "Healing Touch(Rank 1)", amount = 55, mana = 25 },
+    { name = "Healing Touch(Rank 2)", amount = 119, mana = 55 },
+    { name = "Healing Touch(Rank 3)", amount = 253, mana = 110 },
+    { name = "Healing Touch(Rank 4)", amount = 456, mana = 185 }
 }
 
 local REGROWTH_RANKS = {
-    { name = "Regrowth(Rank 1)", amount = 200, mana = 96 },
-    { name = "Regrowth(Rank 2)", amount = 350, mana = 105 }
+    { 
+        name = "Regrowth(Rank 1)", 
+        directAmount = 107,      -- Direct heal amount
+        hotAmount = 98,        -- Total HoT amount (15 per tick for 7 ticks)
+        mana = 96, 
+        hotDuration = 21 
+    },
+    { 
+        name = "Regrowth(Rank 2)", 
+        directAmount = 201,     -- Direct heal amount
+        hotAmount = 175,        -- Total HoT amount (30 per tick for 7 ticks)
+        mana = 164, 
+        hotDuration = 21 
+    },
+    { 
+        name = "Regrowth(Rank 3)", 
+        directAmount = 274,     -- Direct heal amount
+        hotAmount = 259,        -- Total HoT amount (45 per tick for 7 ticks)
+        mana = 224, 
+        hotDuration = 21 
+    }
 }
 
-local HEAL_THRESHOLD_PERCENT = 70    -- HT/Regrowth threshold
-local REJUV_THRESHOLD_PERCENT = 80   -- Rejuv threshold
-local SWIFTMEND_THRESHOLD_PERCENT = 80 -- Swiftmend threshold
+-- Add Rejuvenation ranks configuration
+local REJUVENATION_RANKS = {
+    { name = "Rejuvenation(Rank 1)", amount = 32, mana = 25, duration = 12 },
+    { name = "Rejuvenation(Rank 2)", amount = 56, mana = 50, duration = 12 },
+    { name = "Rejuvenation(Rank 3)", amount = 116, mana = 100, duration = 12 },
+    { name = "Rejuvenation(Rank 4)", amount = 180, mana = 170, duration = 12 }
+}
+
+-- Healing Thresholds
+local HEALING_TOUCH_THRESHOLD_PERCENT = 50    -- HT threshold
+local REGROWTH_THRESHOLD_PERCENT = 60         -- Regrowth threshold
+local REJUV_THRESHOLD_PERCENT = 70            -- Rejuv threshold
+local SWIFTMEND_THRESHOLD_PERCENT = 60        -- Swiftmend threshold
+
 local MIN_HEAL_AMOUNT = 30           -- Minimum HP missing for direct heals
 local MIN_MANA_DAMAGE = 50           -- Don't DPS below 50% mana
 local SWIFTMEND_COOLDOWN = 15        -- Swiftmend cooldown in seconds
@@ -228,38 +260,129 @@ local function BuffPartyPets()
     return false
 end
 
-local function RecordHotCast(unit, spellName)
-    if not hotTimers[unit] then hotTimers[unit] = {} end
+-- Add a function to periodically update expected HoT healing (call this in your main loop)
+local function UpdateExpectedHoTHealing()
+    local currentTime = GetTime()
+    expectedHoTHealing = {} -- Reset and recalculate each update
     
-    if spellName == REJUVENATION_SPELL then
-        hotTimers[unit].rejuvExpire = GetTime() + 12 -- Rejuv lasts 12 seconds
+    for unit, timers in pairs(hotTimers) do
+        if UnitExists(unit) and not UnitIsDeadOrGhost(unit) then
+            -- Process Rejuvenation
+            if timers.rejuv and currentTime < timers.rejuv.expire then
+                local remainingDuration = timers.rejuv.expire - currentTime
+                local totalDuration = timers.rejuv.rank.duration
+                expectedHoTHealing[unit] = (expectedHoTHealing[unit] or 0) + 
+                    (timers.rejuv.amount * (remainingDuration / totalDuration))
+            end
+            
+            -- Process Regrowth
+            if timers.regrowth and currentTime < timers.regrowth.expire then
+                local remainingDuration = timers.regrowth.expire - currentTime
+                local totalDuration = timers.regrowth.rank.hotDuration
+                expectedHoTHealing[unit] = (expectedHoTHealing[unit] or 0) + 
+                    (timers.regrowth.amount * (remainingDuration / totalDuration))
+            end
+        else
+            -- Clear data for invalid units
+            hotTimers[unit] = nil
+        end
+    end
+end
+
+-- Add a function to calculate effective missing health
+local function GetEffectiveMissingHealth(unit)
+    if not UnitExists(unit) or UnitIsDeadOrGhost(unit) then return 0 end
+    
+    local currentHP = UnitHealth(unit)
+    local maxHP = UnitHealthMax(unit)
+    local missing = maxHP - currentHP
+    
+    -- Get precise expected healing from UpdateExpectedHoTHealing
+    UpdateExpectedHoTHealing() -- Ensure calculations are current
+    
+    return math.max(0, missing - (expectedHoTHealing[unit] or 0))
+end
+
+
+local function RecordHotCast(unit, spellName)
+    if not hotTimers[unit] then 
+        hotTimers[unit] = {} 
+        expectedHoTHealing[unit] = 0
+    end
+    
+    if string.find(spellName, "Rejuvenation") then
+        -- Find and store the exact rank information
+        for _, rank in ipairs(REJUVENATION_RANKS) do
+            if rank.name == spellName then
+                hotTimers[unit].rejuv = {
+                    expire = GetTime() + rank.duration,
+                    rank = rank,
+                    amount = rank.amount
+                }
+                expectedHoTHealing[unit] = (expectedHoTHealing[unit] or 0) + rank.amount
+                break
+            end
+        end
+        
     elseif string.find(spellName, "Regrowth") then
-        hotTimers[unit].regrowthExpire = GetTime() + 21 -- Regrowth lasts 21 seconds
+        -- Find and store the exact rank information
+        for _, rank in ipairs(REGROWTH_RANKS) do
+            if rank.name == spellName then
+                hotTimers[unit].regrowth = {
+                    expire = GetTime() + rank.hotDuration,
+                    rank = rank,
+                    amount = rank.hotAmount
+                }
+                expectedHoTHealing[unit] = (expectedHoTHealing[unit] or 0) + rank.hotAmount
+                break
+            end
+        end
     end
 end
 
 local function GetAppropriateHealRank(missingHealth, unit)
+    -- Check Regrowth first if enabled
     if regrowthEnabled then
         for i = table.getn(REGROWTH_RANKS), 1, -1 do
             local rank = REGROWTH_RANKS[i]
-            if missingHealth >= rank.amount and UnitMana("player") >= rank.mana and not HasBuff(unit, REGROWTH_TEXTURE) then
+            local totalHealing = rank.directAmount + rank.hotAmount
+            -- Use REGROWTH_THRESHOLD_PERCENT for Regrowth specifically
+            if missingHealth >= totalHealing and UnitMana("player") >= rank.mana and 
+               not HasBuff(unit, REGROWTH_TEXTURE) and 
+               ((UnitHealth(unit) / UnitHealthMax(unit)) * 100) < REGROWTH_THRESHOLD_PERCENT then
                 return rank.name
             end
         end
     end
     
+    -- Then check Healing Touch if enabled
     if healingTouchEnabled then
         local bestRank = HEALING_TOUCH_RANKS[1]
         for i = 1, table.getn(HEALING_TOUCH_RANKS) do
             local rank = HEALING_TOUCH_RANKS[i]
-            if missingHealth >= rank.amount and UnitMana("player") >= rank.mana then
+            -- Use HEALING_TOUCH_THRESHOLD_PERCENT for HT specifically
+            if missingHealth >= rank.amount and UnitMana("player") >= rank.mana and 
+               ((UnitHealth(unit) / UnitHealthMax(unit)) * 100) < HEALING_TOUCH_THRESHOLD_PERCENT then
                 bestRank = rank
             end
         end
-        return bestRank.name
+        -- Only return HT if we found a suitable rank and the health is below HT threshold
+        if ((UnitHealth(unit) / UnitHealthMax(unit)) * 100) < HEALING_TOUCH_THRESHOLD_PERCENT then
+            return bestRank.name
+        end
     end
     
     return nil
+end
+
+local function GetAppropriateRejuvRank(missingHealth, unit)
+    for i = table.getn(REJUVENATION_RANKS), 1, -1 do
+        local rank = REJUVENATION_RANKS[i]
+        if missingHealth >= rank.amount and UnitMana("player") >= rank.mana and not HasBuff(unit, REJUVENATION_TEXTURE) then
+            return rank.name
+        end
+    end
+    return REJUVENATION_RANKS[1].name -- Default to rank 1 if nothing else matches
 end
 
 local function CheckUnitSwiftmend(unit)
@@ -270,45 +393,82 @@ local function CheckUnitSwiftmend(unit)
     local currentTime = GetTime()
     local hpPercent = (UnitHealth(unit) / UnitHealthMax(unit)) * 100
     
-    -- Only consider Swiftmend if health is below threshold
     if hpPercent > SWIFTMEND_THRESHOLD_PERCENT then
         return false
     end
     
-    -- Check if we have an active HoT that's about to expire
     if hotTimers[unit] then
         local rejuvActive = HasBuff(unit, REJUVENATION_TEXTURE)
         local regrowthActive = HasBuff(unit, REGROWTH_TEXTURE)
+        local consumedHoT = false
         
         -- Prefer to consume Regrowth if it's about to expire
-        if regrowthActive and hotTimers[unit].regrowthExpire and 
-           (hotTimers[unit].regrowthExpire - currentTime < 3) then
+        if regrowthActive and hotTimers[unit].regrowth and 
+           (hotTimers[unit].regrowth.expire - currentTime < 6) then
             DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Swiftmend on %s (Regrowth expiring)", 
                 unit=="player" and "self" or UnitName(unit)))
             CastSpellByName(SWIFTMEND_SPELL)
             SpellTargetUnit(unit)
             swiftmendLastUsed = GetTime()
-            return true
+            
+            -- Use exact rank info
+            if expectedHoTHealing[unit] then
+                expectedHoTHealing[unit] = expectedHoTHealing[unit] - hotTimers[unit].regrowth.amount
+                expectedHoTHealing[unit] = math.max(0, expectedHoTHealing[unit])
+            end
+            consumedHoT = true
         end
         
         -- Otherwise consume Rejuv if it's about to expire
-        if rejuvActive and hotTimers[unit].rejuvExpire and 
-           (hotTimers[unit].rejuvExpire - currentTime < 3) then
+        if not consumedHoT and rejuvActive and hotTimers[unit].rejuv and 
+           (hotTimers[unit].rejuv.expire - currentTime < 4) then
             DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Swiftmend on %s (Rejuvenation expiring)", 
                 unit=="player" and "self" or UnitName(unit)))
             CastSpellByName(SWIFTMEND_SPELL)
             SpellTargetUnit(unit)
             swiftmendLastUsed = GetTime()
-            return true
+            
+            -- Use exact rank info
+            if expectedHoTHealing[unit] then
+                expectedHoTHealing[unit] = expectedHoTHealing[unit] - hotTimers[unit].rejuv.amount
+                expectedHoTHealing[unit] = math.max(0, expectedHoTHealing[unit])
+            end
+            consumedHoT = true
         end
         
-        -- Emergency case - health is very low and we have any HoT
-        if hpPercent < 40 and (rejuvActive or regrowthActive) then
+        -- Emergency case
+        if not consumedHoT and hpPercent < 40 and (rejuvActive or regrowthActive) then
             DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Emergency Swiftmend on %s (%d%% HP)", 
                 unit=="player" and "self" or UnitName(unit), math.floor(hpPercent)))
             CastSpellByName(SWIFTMEND_SPELL)
             SpellTargetUnit(unit)
             swiftmendLastUsed = GetTime()
+            
+            -- Use exact rank info
+            if expectedHoTHealing[unit] then
+                if regrowthActive and hotTimers[unit].regrowth then
+                    expectedHoTHealing[unit] = expectedHoTHealing[unit] - hotTimers[unit].regrowth.amount
+                elseif rejuvActive and hotTimers[unit].rejuv then
+                    expectedHoTHealing[unit] = expectedHoTHealing[unit] - hotTimers[unit].rejuv.amount
+                end
+                expectedHoTHealing[unit] = math.max(0, expectedHoTHealing[unit])
+            end
+            consumedHoT = true
+        end
+        
+        if consumedHoT then
+            -- Clear the consumed HoT
+            if regrowthActive and hotTimers[unit].regrowth then
+                hotTimers[unit].regrowth = nil
+            elseif rejuvActive and hotTimers[unit].rejuv then
+                hotTimers[unit].rejuv = nil
+            end
+            
+            -- Clean up if no more HoTs
+            if not hotTimers[unit].regrowth and not hotTimers[unit].rejuv then
+                hotTimers[unit] = nil
+            end
+            
             return true
         end
     end
@@ -349,12 +509,18 @@ local function CheckRejuvenation()
     local didHeal = false
     
     if not UnitIsDeadOrGhost("player") and IsInRange("player") then
-        local hpPercent = (UnitHealth("player") / UnitHealthMax("player")) * 100
+        local currentHP = UnitHealth("player")
+        local maxHP = UnitHealthMax("player")
+        local missing = maxHP - currentHP
+        local hpPercent = (currentHP / maxHP) * 100
+        
         if hpPercent < REJUV_THRESHOLD_PERCENT and not HasBuff("player", REJUVENATION_TEXTURE) then
-            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Rejuvenation on self (%d%%)", math.floor(hpPercent)))
-            CastSpellByName(REJUVENATION_SPELL)
+            local spellName = GetAppropriateRejuvRank(missing, "player")
+            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: %s on self (%d%%, missing %d)", 
+                spellName, math.floor(hpPercent), missing))
+            CastSpellByName(spellName)
             SpellTargetUnit("player")
-            RecordHotCast("player", REJUVENATION_SPELL)
+            RecordHotCast("player", spellName)
             didHeal = true
         end
     end
@@ -362,12 +528,18 @@ local function CheckRejuvenation()
     for i=1,4 do
         local unit = "party"..i
         if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and IsInRange(unit) then
-            local hpPercent = (UnitHealth(unit) / UnitHealthMax(unit)) * 100
+            local currentHP = UnitHealth(unit)
+            local maxHP = UnitHealthMax(unit)
+            local missing = maxHP - currentHP
+            local hpPercent = (currentHP / maxHP) * 100
+            
             if hpPercent < REJUV_THRESHOLD_PERCENT and not HasBuff(unit, REJUVENATION_TEXTURE) then
-                DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Rejuvenation on %s (%d%%)", UnitName(unit), math.floor(hpPercent)))
-                CastSpellByName(REJUVENATION_SPELL)
+                local spellName = GetAppropriateRejuvRank(missing, unit)
+                DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: %s on %s (%d%%, missing %d)", 
+                    spellName, UnitName(unit), math.floor(hpPercent), missing))
+                CastSpellByName(spellName)
                 SpellTargetUnit(unit)
-                RecordHotCast(unit, REJUVENATION_SPELL)
+                RecordHotCast(unit, spellName)
                 didHeal = true
             end
         end
@@ -384,53 +556,92 @@ local function CheckAndHeal()
     local healTarget = nil
     local mostMissingHealth = 0
     local lowestHPPercent = 100
+    local effectiveMissing = 0
 
+    -- Check player first
     if not UnitIsDeadOrGhost("player") and IsInRange("player") then
         local currentHP = UnitHealth("player")
         local maxHP = UnitHealthMax("player")
         local missing = maxHP - currentHP
+        effectiveMissing = GetEffectiveMissingHealth("player")
         local hpPercent = (currentHP / maxHP) * 100
         
         if hpPercent < lowestHPPercent then
             lowestHPPercent = hpPercent
-            mostMissingHealth = missing
+            mostMissingHealth = effectiveMissing -- Use effective missing health
             healTarget = "player"
         end
     end
 
+    -- Check party members
     for i=1,4 do
         local unit = "party"..i
         if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and IsInRange(unit) then
             local currentHP = UnitHealth(unit)
             local maxHP = UnitHealthMax(unit)
             local missing = maxHP - currentHP
+            effectiveMissing = GetEffectiveMissingHealth(unit)
             local hpPercent = (currentHP / maxHP) * 100
             
             if hpPercent < lowestHPPercent then
                 lowestHPPercent = hpPercent
-                mostMissingHealth = missing
+                mostMissingHealth = effectiveMissing -- Use effective missing health
                 healTarget = unit
             end
         end
     end
 
-    if healTarget and lowestHPPercent < HEAL_THRESHOLD_PERCENT and mostMissingHealth >= MIN_HEAL_AMOUNT then
+    -- Check if we found a target that needs healing
+    local initialThreshold = math.max(HEALING_TOUCH_THRESHOLD_PERCENT, REGROWTH_THRESHOLD_PERCENT)
+    if healTarget and lowestHPPercent < initialThreshold and mostMissingHealth >= MIN_HEAL_AMOUNT then
         local spellName = GetAppropriateHealRank(mostMissingHealth, healTarget)
         
         if not spellName then
             return false
         end
         
-        DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Healing %s (%d%% HP, missing %d) with %s", 
-            healTarget=="player" and "self" or UnitName(healTarget), 
-            math.floor(lowestHPPercent),
-            mostMissingHealth,
-            spellName))
+        -- Special message showing effective missing health
+        if string.find(spellName, "Regrowth") then
+            local regrowthInfo = nil
+            for _, rank in ipairs(REGROWTH_RANKS) do
+                if rank.name == spellName then
+                    regrowthInfo = rank
+                    break
+                end
+            end
+            
+            if regrowthInfo then
+                DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Healing %s (%d%% HP, missing %d [%d after HoTs]) with %s (%d direct + %d over %d sec)", 
+                    healTarget=="player" and "self" or UnitName(healTarget), 
+                    math.floor(lowestHPPercent),
+                    UnitHealthMax(healTarget) - UnitHealth(healTarget),
+                    mostMissingHealth,
+                    spellName,
+                    regrowthInfo.directAmount,
+                    regrowthInfo.hotAmount,
+                    regrowthInfo.hotDuration))
+            else
+                DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Healing %s (%d%% HP, missing %d [%d after HoTs]) with %s", 
+                    healTarget=="player" and "self" or UnitName(healTarget), 
+                    math.floor(lowestHPPercent),
+                    UnitHealthMax(healTarget) - UnitHealth(healTarget),
+                    mostMissingHealth,
+                    spellName))
+            end
+        else
+            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Healing %s (%d%% HP, missing %d [%d after HoTs]) with %s", 
+                healTarget=="player" and "self" or UnitName(healTarget), 
+                math.floor(lowestHPPercent),
+                UnitHealthMax(healTarget) - UnitHealth(healTarget),
+                mostMissingHealth,
+                spellName))
+        end
+        
         CastSpellByName(spellName)
         SpellTargetUnit(healTarget)
         
-        -- Record if we cast Regrowth
-        if string.find(spellName, "Regrowth") then
+        -- Record if we cast a HoT
+        if string.find(spellName, "Regrowth") or string.find(spellName, "Rejuvenation") then
             RecordHotCast(healTarget, spellName)
         end
         
@@ -490,6 +701,7 @@ local function CastDamageSpells()
 end
 
 local function DoDribbleActions()
+	UpdateExpectedHoTHealing() -- Update expected HoT healing first
     if HandleStealthFollowing() then 
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Maintaining stealth with party")
         return 
