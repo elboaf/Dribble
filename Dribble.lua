@@ -937,9 +937,6 @@ local function DoDribbleActions()
         return
     end
 
-    -- Call DECURSIVE if no other actions were taken
-    DEFAULT_CHAT_FRAME:AddMessage("Dribble: No actions needed - attempting decursive")
-    SlashCmdList["DECURSIVE"]()
 end
 
 local function ToggleFollowMode()
