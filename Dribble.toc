@@ -2,6 +2,6 @@
 ## Title: Dribble
 ## Notes: Simple Druid automation addon
 ## Author: YourName
-## Version: 1.0
+## Version: 1.0.1
 
 Dribble.lua

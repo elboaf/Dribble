@@ -16,6 +16,12 @@ local PROWL_SPELL = "Prowl"
 local WRATH_SPELL = "Wrath"
 local SWIFTMEND_SPELL = "Swiftmend"
 
+-- Add these with the other spell names
+local CLAW_SPELL = "Claw"
+local FEROCIOUS_BITE_SPELL = "Ferocious Bite"
+
+-- Add these with the other texture patterns
+
 -- Texture patterns
 local MOTW_TEXTURE = "Regeneration"
 local THORNS_TEXTURE = "Thorns"
@@ -32,6 +38,7 @@ local STEALTH_TEXTURE = "Ability_Stealth"
 local WRATH_TEXTURE = "Spell_Nature_Earthquake"
 
 local expectedHoTHealing = {} -- Tracks expected HoT healing per unit
+local catModeEnabled = false
 
 -- Healing Configuration
 local HEALING_TOUCH_RANKS = {
@@ -74,10 +81,12 @@ local REJUVENATION_RANKS = {
 }
 
 -- Healing Thresholds
-local HEALING_TOUCH_THRESHOLD_PERCENT = 50    -- HT threshold
-local REGROWTH_THRESHOLD_PERCENT = 60         -- Regrowth threshold
-local REJUV_THRESHOLD_PERCENT = 70            -- Rejuv threshold
-local SWIFTMEND_THRESHOLD_PERCENT = 60        -- Swiftmend threshold
+local HEALING_TOUCH_THRESHOLD_PERCENT = 80    -- HT threshold
+local REGROWTH_THRESHOLD_PERCENT = 70         -- Regrowth threshold
+local REJUV_THRESHOLD_PERCENT = 60            -- Rejuv threshold
+local SWIFTMEND_THRESHOLD_PERCENT = 80        -- Swiftmend threshold
+
+local REJUV_MANA_THRESHOLD = 90 -- Don't cast Rejuv below 70% mana
 
 local MIN_HEAL_AMOUNT = 30           -- Minimum HP missing for direct heals
 local MIN_MANA_DAMAGE = 50           -- Don't DPS below 50% mana
@@ -100,6 +109,10 @@ local swiftmendEnabled = true
 -- Swiftmend tracking
 local swiftmendLastUsed = 0
 local hotTimers = {} -- Tracks HoT expiration times per unit
+
+local function IsInCombat()
+    return UnitAffectingCombat("player")
+end
 
 local function IsInRange(unit)
     return CheckInteractDistance(unit, 4) -- 30 yard range
@@ -189,6 +202,8 @@ local function HandleGougedTarget()
     return true
 end
 
+
+
 local function HandleStealthFollowing()
     if not followEnabled or UnitAffectingCombat("player") or not IsInRange(followTarget) then 
         return false 
@@ -229,6 +244,19 @@ local function BuffUnit(unit)
         return false
     end
 
+    -- Never leave stealth if party member is still stealthed
+    if IsInForm(PROWL_TEXTURE) and UnitExists(followTarget) and HasBuff(followTarget, STEALTH_TEXTURE) then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Maintaining stealth with party member")
+        return false
+    end
+
+    -- Leave cat form temporarily to buff if needed
+    local wasInCatForm = IsInForm(CAT_FORM_TEXTURE)
+    if wasInCatForm and (not HasBuff(unit, MOTW_TEXTURE) or not HasBuff(unit, THORNS_TEXTURE)) then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Leaving cat form to buff")
+        CastSpellByName(CAT_FORM_SPELL) -- Leave form
+    end
+
     if not HasBuff(unit, MOTW_TEXTURE) then
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Buffing "..UnitName(unit))
         CastSpellByName(MOTW_SPELL)
@@ -241,6 +269,12 @@ local function BuffUnit(unit)
         CastSpellByName(THORNS_SPELL)
         SpellTargetUnit(unit)
         return true
+    end
+
+    -- Return to cat form if we left it for buffing
+    if wasInCatForm and not IsInForm(CAT_FORM_TEXTURE) and catModeEnabled then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Returning to cat form after buffing")
+        CastSpellByName(CAT_FORM_SPELL)
     end
 
     return false
@@ -393,7 +427,8 @@ local function CheckUnitSwiftmend(unit)
     local currentTime = GetTime()
     local hpPercent = (UnitHealth(unit) / UnitHealthMax(unit)) * 100
     
-    if hpPercent > SWIFTMEND_THRESHOLD_PERCENT then
+    -- Don't Swiftmend if above threshold (unless emergency)
+    if hpPercent > SWIFTMEND_THRESHOLD_PERCENT and hpPercent >= 40 then
         return false
     end
     
@@ -402,49 +437,48 @@ local function CheckUnitSwiftmend(unit)
         local regrowthActive = HasBuff(unit, REGROWTH_TEXTURE)
         local consumedHoT = false
         
+        -- Calculate time left on HoTs
+        local rejuvTimeLeft = rejuvActive and (hotTimers[unit].rejuv.expire - currentTime) or 0
+        local regrowthTimeLeft = regrowthActive and (hotTimers[unit].regrowth.expire - currentTime) or 0
+        
         -- Prefer to consume Regrowth if it's about to expire
-        if regrowthActive and hotTimers[unit].regrowth and 
-           (hotTimers[unit].regrowth.expire - currentTime < 6) then
-            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Swiftmend on %s (Regrowth expiring)", 
-                unit=="player" and "self" or UnitName(unit)))
+        if regrowthActive and regrowthTimeLeft < 7 then
+            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Swiftmend on %s (Regrowth expiring in %.1fs)", 
+                unit=="player" and "self" or UnitName(unit), regrowthTimeLeft))
             CastSpellByName(SWIFTMEND_SPELL)
             SpellTargetUnit(unit)
             swiftmendLastUsed = GetTime()
-            
-            -- Use exact rank info
-            if expectedHoTHealing[unit] then
-                expectedHoTHealing[unit] = expectedHoTHealing[unit] - hotTimers[unit].regrowth.amount
-                expectedHoTHealing[unit] = math.max(0, expectedHoTHealing[unit])
-            end
             consumedHoT = true
-        end
-        
         -- Otherwise consume Rejuv if it's about to expire
-        if not consumedHoT and rejuvActive and hotTimers[unit].rejuv and 
-           (hotTimers[unit].rejuv.expire - currentTime < 4) then
-            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Swiftmend on %s (Rejuvenation expiring)", 
-                unit=="player" and "self" or UnitName(unit)))
+        elseif not consumedHoT and rejuvActive and rejuvTimeLeft < 4 then
+            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Swiftmend on %s (Rejuvenation expiring in %.1fs)", 
+                unit=="player" and "self" or UnitName(unit), rejuvTimeLeft))
             CastSpellByName(SWIFTMEND_SPELL)
             SpellTargetUnit(unit)
             swiftmendLastUsed = GetTime()
-            
-            -- Use exact rank info
-            if expectedHoTHealing[unit] then
-                expectedHoTHealing[unit] = expectedHoTHealing[unit] - hotTimers[unit].rejuv.amount
-                expectedHoTHealing[unit] = math.max(0, expectedHoTHealing[unit])
-            end
             consumedHoT = true
+        -- Emergency case - very low health and HoT has been active for at least 25% of its duration
+        elseif not consumedHoT and hpPercent < 40 and (rejuvActive or regrowthActive) then
+            local minTimePassed = false
+            if rejuvActive and rejuvTimeLeft < (hotTimers[unit].rejuv.rank.duration * 0.75) then
+                minTimePassed = true
+            end
+            if regrowthActive and regrowthTimeLeft < (hotTimers[unit].regrowth.rank.hotDuration * 0.75) then
+                minTimePassed = true
+            end
+            
+            if minTimePassed then
+                DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Emergency Swiftmend on %s (%d%% HP)", 
+                    unit=="player" and "self" or UnitName(unit), math.floor(hpPercent)))
+                CastSpellByName(SWIFTMEND_SPELL)
+                SpellTargetUnit(unit)
+                swiftmendLastUsed = GetTime()
+                consumedHoT = true
+            end
         end
         
-        -- Emergency case
-        if not consumedHoT and hpPercent < 40 and (rejuvActive or regrowthActive) then
-            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Emergency Swiftmend on %s (%d%% HP)", 
-                unit=="player" and "self" or UnitName(unit), math.floor(hpPercent)))
-            CastSpellByName(SWIFTMEND_SPELL)
-            SpellTargetUnit(unit)
-            swiftmendLastUsed = GetTime()
-            
-            -- Use exact rank info
+        if consumedHoT then
+            -- Update expected healing
             if expectedHoTHealing[unit] then
                 if regrowthActive and hotTimers[unit].regrowth then
                     expectedHoTHealing[unit] = expectedHoTHealing[unit] - hotTimers[unit].regrowth.amount
@@ -453,20 +487,16 @@ local function CheckUnitSwiftmend(unit)
                 end
                 expectedHoTHealing[unit] = math.max(0, expectedHoTHealing[unit])
             end
-            consumedHoT = true
-        end
-        
-        if consumedHoT then
-            -- Clear the consumed HoT
-            if regrowthActive and hotTimers[unit].regrowth then
-                hotTimers[unit].regrowth = nil
-            elseif rejuvActive and hotTimers[unit].rejuv then
-                hotTimers[unit].rejuv = nil
-            end
             
-            -- Clean up if no more HoTs
-            if not hotTimers[unit].regrowth and not hotTimers[unit].rejuv then
-                hotTimers[unit] = nil
+            -- Clear the consumed HoT
+            if hotTimers[unit] then
+                if regrowthActive then hotTimers[unit].regrowth = nil end
+                if rejuvActive then hotTimers[unit].rejuv = nil end
+                
+                -- Clean up if no more HoTs
+                if not hotTimers[unit].regrowth and not hotTimers[unit].rejuv then
+                    hotTimers[unit] = nil
+                end
             end
             
             return true
@@ -503,6 +533,11 @@ local function CheckRejuvenation()
     end
     
     if not rejuvEnabled then
+        return false
+    end
+
+    -- Add mana threshold check (70%)
+    if UnitMana("player")/UnitManaMax("player")*100 < 70 then
         return false
     end
 
@@ -700,36 +735,211 @@ local function CastDamageSpells()
     return false
 end
 
+local function ShouldLeaveCatFormForHealing()
+    -- Never leave stealth if party member is still stealthed
+    if IsInForm(PROWL_TEXTURE) and UnitExists(followTarget) and HasBuff(followTarget, STEALTH_TEXTURE) then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Maintaining stealth - skipping heal")
+        return false
+    end
+    
+    -- In cat mode, only heal if in combat AND someone is critically low
+    if catModeEnabled and UnitAffectingCombat("player") then
+        -- Check player first
+        if not UnitIsDeadOrGhost("player") and (UnitHealth("player") / UnitHealthMax("player")) * 100 <= 40 then
+            local missingHealth = UnitHealthMax("player") - UnitHealth("player")
+            if GetAppropriateHealRank(missingHealth, "player") then
+                DEFAULT_CHAT_FRAME:AddMessage("Dribble: Critical heal needed (Player at "..math.floor((UnitHealth("player") / UnitHealthMax("player")) * 100).."%)")
+                return true
+            end
+        end
+        
+        -- Check party members
+        for i=1,4 do
+            local unit = "party"..i
+            if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and 
+               (UnitHealth(unit) / UnitHealthMax(unit)) * 100 <= 40 then
+                local missingHealth = UnitHealthMax(unit) - UnitHealth(unit)
+                if GetAppropriateHealRank(missingHealth, unit) then
+                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Critical heal needed ("..UnitName(unit).." at "..math.floor((UnitHealth(unit) / UnitHealthMax(unit)) * 100).."%)")
+                    return true
+                end
+            end
+        end
+        return false
+    end
+    
+    -- Normal healing behavior when not in cat mode or not in combat
+    return true
+end
+
+local function HandleCatFormDPS()
+    -- First try to get a target from party members
+    local foundTarget = false
+    for i=1,4 do
+        local member = "party"..i
+        if UnitExists(member) then
+            local target = member.."target"
+            if UnitExists(target) and UnitCanAttack("player", target) and not UnitIsDeadOrGhost(target) then
+                if not UnitExists("target") or UnitName("target") ~= UnitName(target) then
+                    TargetUnit(target)
+                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Assisting "..UnitName(member).." on "..UnitName(target))
+                    foundTarget = true
+                    break
+                else
+                    foundTarget = true
+                    break
+                end
+            end
+        end
+    end
+
+    if not foundTarget then
+        return false
+    end
+    
+    if not UnitExists("target") or not UnitCanAttack("player", "target") or UnitIsDeadOrGhost("target") then
+        return false
+    end
+    
+    if not IsInForm(CAT_FORM_TEXTURE) then
+        return false
+    end
+    
+    local comboPoints = GetComboPoints()
+    
+    if not IsCurrentAction(60) then
+    AttackTarget()
+    end
+    -- Use Ferocious Bite at 5 combo points
+    if comboPoints >= 2 then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Using Ferocious Bite (5 combo points)")
+        CastSpellByName(FEROCIOUS_BITE_SPELL)
+        return true
+    end
+    
+    -- Default to Claw to build combo points
+    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Using Claw to build combo points")
+    CastSpellByName(CLAW_SPELL)
+    return true
+end
+
 local function DoDribbleActions()
-	UpdateExpectedHoTHealing() -- Update expected HoT healing first
+    UpdateExpectedHoTHealing() -- Update expected HoT healing first
+    
+    -- Handle follow (works in all modes)
+    if followEnabled and UnitExists(followTarget) and not IsInForm(PROWL_TEXTURE) then
+        FollowUnit(followTarget)
+    end
+
+    -- Handle stealth following (highest priority)
     if HandleStealthFollowing() then 
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Maintaining stealth with party")
         return 
     end
 
-    if followEnabled and UnitExists(followTarget) then
-        FollowUnit(followTarget)
+    -- Buff checks (player, party, and pets)
+    if not IsInForm(PROWL_TEXTURE) then
+        -- Buff player first
+        if BuffUnit("player") then return end
+        
+        -- Buff party members
+        for i=1,4 do
+            local unit = "party"..i
+            if BuffUnit(unit) then return end
+        end
+        
+        -- Buff pets if enabled
+        if buffPets then
+            for i=1,4 do
+                local petUnit = "partypet"..i
+                if UnitExists(petUnit) and not UnitIsDeadOrGhost(petUnit) and BuffUnit(petUnit) then
+                    return
+                end
+            end
+        end
     end
 
-    if CheckSwiftmend() then return end
+    -- Make catmode and dpsmode mutually exclusive
+    if catModeEnabled then
+        damageAssistEnabled = false
+        
+        -- Cat Mode logic
+        if not UnitAffectingCombat("player") then
+            -- Out of combat - allow normal healing but default to cat form
+            if CheckSwiftmend() then return end
+            if CheckRejuvenation() then return end
+            if CheckAndHeal() then return end
+            
+            -- Default to cat form when nothing else to do
+            if not IsInForm(CAT_FORM_TEXTURE) then
+                DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (idle in cat mode)")
+                CastSpellByName(CAT_FORM_SPELL)
+                return
+            end
+            
+            -- Try to assist party members even when not in combat
+            if HandleCatFormDPS() then
+                return
+            end
+        else
+            -- In combat - check for critical heals first
+            if ShouldLeaveCatFormForHealing() then
+                if IsInForm(CAT_FORM_TEXTURE) then
+                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Leaving cat form for critical healing")
+                    CastSpellByName(CAT_FORM_SPELL) -- Leave form
+                    return
+                else
+                    -- NEW: Actually perform the healing when not in cat form
+                    if CheckSwiftmend() then return end
+                    if CheckRejuvenation() then return end
+                    if CheckAndHeal() then return end
+                    
+                    -- After healing, return to cat form if no more heals needed
+                    if not ShouldLeaveCatFormForHealing() then
+                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Critical heals complete - returning to cat form")
+                        CastSpellByName(CAT_FORM_SPELL)
+                        return
+                    end
+                end
+            else
+                -- Stay in cat form and DPS
+                if not IsInForm(CAT_FORM_TEXTURE) then
+                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (combat in cat mode)")
+                    CastSpellByName(CAT_FORM_SPELL)
+                    return
+                end
+                
+                if HandleCatFormDPS() then
+                    return
+                end
+            end
+        end
+    else
+        -- Normal mode logic
+        if CheckSwiftmend() then return end
+        if CheckRejuvenation() then return end
+        if CheckAndHeal() then return end
+    end
 
-    if CheckRejuvenation() then return end
-
-    if CheckAndHeal() then return end
-
+    -- Handle other actions
     if UnitExists("target") and IsTargetGouged() then
         if HandleGougedTarget() then return end
     end
 
-    if BuffUnit("player") then return end
-    for i=1,4 do
-        if BuffUnit("party"..i) then return end
+    if not catModeEnabled and CastDamageSpells() then 
+        return 
     end
-    if BuffPartyPets() then return end
 
-    if CastDamageSpells() then return end
+    -- Final fallback - ensure in cat form if in cat mode with nothing else to do
+    if catModeEnabled and not IsInForm(CAT_FORM_TEXTURE) then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (fallback in cat mode)")
+        CastSpellByName(CAT_FORM_SPELL)
+        return
+    end
 
-    DEFAULT_CHAT_FRAME:AddMessage("Dribble: All actions complete")
+    -- Call DECURSIVE if no other actions were taken
+    DEFAULT_CHAT_FRAME:AddMessage("Dribble: No actions needed - attempting decursive")
+    SlashCmdList["DECURSIVE"]()
 end
 
 local function ToggleFollowMode()
@@ -787,7 +997,12 @@ end
 
 local function ToggleDamageAssistMode()
     damageAssistEnabled = not damageAssistEnabled
-    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Damage assist mode "..(damageAssistEnabled and "enabled" or "disabled"))
+    if damageAssistEnabled then
+        catModeEnabled = false
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: DPS mode enabled (Cat mode disabled)")
+    else
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: DPS mode disabled")
+    end
 end
 
 local function TogglePetBuffingMode()
@@ -835,6 +1050,23 @@ local function ToggleSwiftmend()
     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Swiftmend "..(swiftmendEnabled and "enabled" or "disabled"))
 end
 
+local function ToggleCatMode()
+    catModeEnabled = not catModeEnabled
+    if catModeEnabled then
+        damageAssistEnabled = false
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Cat mode enabled (DPS mode disabled)")
+    else
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Cat mode disabled")
+    end
+    
+    if not catModeEnabled and IsInForm(CAT_FORM_TEXTURE) then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Leaving cat form")
+        CastSpellByName(CAT_FORM_SPELL) -- This will cancel form
+    end
+end
+
+-- Add with the other slash commands
+
 -- Slash commands
 SLASH_DRIBBLE1 = "/dribble"
 SLASH_DRIBBLEFOLLOW1 = "/dribblefollow"
@@ -849,8 +1081,12 @@ SLASH_DRIBBLEFAERIEFIRE1 = "/dribblefaeriefire"
 SLASH_DRIBBLEINSECTSWARM1 = "/dribbleinsectswarm"
 SLASH_DRIBBLEWRATH1 = "/dribblewrath"
 SLASH_DRIBBLESWIFTMEND1 = "/dribbleswiftmend"
+SLASH_DRIBBLECATMODE1 = "/dribblecatmode"
 
-SlashCmdList["DRIBBLE"] = DoDribbleActions
+SlashCmdList["DRIBBLE"] = function()
+    DoDribbleActions()
+end
+
 SlashCmdList["DRIBBLEFOLLOW"] = ToggleFollowMode
 SlashCmdList["DRIBBLEFOLLOWTARGET"] = SetFollowTarget
 SlashCmdList["DRIBBLEDPS"] = ToggleDamageAssistMode
@@ -863,3 +1099,4 @@ SlashCmdList["DRIBBLEFAERIEFIRE"] = ToggleFaerieFire
 SlashCmdList["DRIBBLEINSECTSWARM"] = ToggleInsectSwarm
 SlashCmdList["DRIBBLEWRATH"] = ToggleWrath
 SlashCmdList["DRIBBLESWIFTMEND"] = ToggleSwiftmend
+SlashCmdList["DRIBBLECATMODE"] = ToggleCatMode
