@@ -2,6 +2,7 @@
 Dribble = {}
 
 -- Spell names
+local DASH_SPELL = "Dash"
 local MOTW_SPELL = "Mark of the Wild"
 local THORNS_SPELL = "Thorns"
 local MOONFIRE_SPELL = "Moonfire"
@@ -23,6 +24,8 @@ local FEROCIOUS_BITE_SPELL = "Ferocious Bite"
 -- Add these with the other texture patterns
 
 -- Texture patterns
+local DASH_TEXTURE = "Ability_Druid_Dash"
+local SPRINT_TEXTURE = "Ability_Rogue_Sprint"
 local MOTW_TEXTURE = "Regeneration"
 local THORNS_TEXTURE = "Thorns"
 local MOONFIRE_TEXTURE = "StarFall"
@@ -812,7 +815,7 @@ local function HandleCatFormDPS()
     end
     -- Use Ferocious Bite at 5 combo points
     if comboPoints >= 2 then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Using Ferocious Bite (5 combo points)")
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Using Ferocious Bite (2 combo points)")
         CastSpellByName(FEROCIOUS_BITE_SPELL)
         return true
     end
@@ -821,6 +824,51 @@ local function HandleCatFormDPS()
     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Using Claw to build combo points")
     CastSpellByName(CLAW_SPELL)
     return true
+end
+
+local function HandleSprintFollowing()
+    if not followEnabled or UnitAffectingCombat("player") then 
+        return false 
+    end
+    
+    -- Check if any party member is sprinting
+    local partyMemberSprinting = false
+    for i=1,4 do
+        local unit = "party"..i
+        if UnitExists(unit) and HasBuff(unit, SPRINT_TEXTURE) then
+            partyMemberSprinting = true
+            break
+        end
+    end
+    
+    if not partyMemberSprinting then
+        return false
+    end
+    
+    -- If we're already dashing, just maintain cat form
+    if IsInForm(DASH_TEXTURE) then
+        if not IsInForm(CAT_FORM_TEXTURE) then
+            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Party member sprinting - entering Cat Form to maintain Dash")
+            CastSpellByName(CAT_FORM_SPELL)
+        end
+        return true
+    end
+    
+    -- Enter cat form if not already
+    if not IsInForm(CAT_FORM_TEXTURE) then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Party member sprinting - entering Cat Form")
+        CastSpellByName(CAT_FORM_SPELL)
+        return true
+    end
+    
+    -- Cast dash if in cat form and not already dashing
+    if IsInForm(CAT_FORM_TEXTURE) and not IsInForm(DASH_TEXTURE) then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Party member sprinting - using Dash to keep up")
+        CastSpellByName(DASH_SPELL)
+        return true
+    end
+    
+    return false
 end
 
 local function DoDribbleActions()
@@ -835,6 +883,12 @@ local function DoDribbleActions()
     if HandleStealthFollowing() then 
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Maintaining stealth with party")
         return 
+    end
+    
+    -- Handle sprint following (second highest priority)
+    if HandleSprintFollowing() then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Maintaining dash with sprinting party member")
+        return
     end
 
     -- Buff checks (player, party, and pets)
