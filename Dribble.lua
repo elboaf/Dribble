@@ -159,16 +159,32 @@ local function IsUnitHostile(unit)
 end
 
 local function IsTargetGouged()
-    if not UnitExists("target") or not UnitCanAttack("player", "target") then
+    if not UnitExists("target") then
         return false
     end
-    
-    local creatureType = UnitCreatureType("target")
-    if creatureType ~= "Beast" and creatureType ~= "Dragonkin" then
-        return false
+
+    for i = 1, 16 do
+        local debuffTexture = UnitDebuff("target", i)
+        if debuffTexture and strfind(debuffTexture, GOUGE_TEXTURE) then
+            -- Use GameTooltip to get the debuff name
+            GameTooltip:SetOwner(UIParent, "ANCHOR_NONE") -- Prevent tooltip from appearing on screen
+            GameTooltip:SetUnitDebuff("target", i)
+            local tooltipText = GameTooltipTextLeft1:GetText() -- First line of the tooltip (debuff name)
+            GameTooltip:Hide()
+
+            if tooltipText == "Gouge" then
+                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is gouged")
+
+                return true
+            elseif tooltipText == "Rend" then
+                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is rended")
+
+                return false -- It's Rend, not Gouge
+            end
+        end
     end
-    
-    return HasDebuff("target", GOUGE_TEXTURE)
+
+    return false
 end
 
 local function IsTargetHibernated()
@@ -185,27 +201,34 @@ local function IsTargetHibernated()
 end
 
 local function HandleGougedTarget()
+    -- Just check current target if it exists
+    if not UnitExists("target") or UnitIsDeadOrGhost("target") then
+        return false
+    end
+
+    -- Must be beast/dragonkin
+    local creatureType = UnitCreatureType("target")
+    if creatureType ~= "Beast" and creatureType ~= "Dragonkin" then
+        return false
+    end
+
+    -- Check for gouge
     if not IsTargetGouged() then
         return false
     end
-    
+
+    -- Don't double-hibernate
     if IsTargetHibernated() then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is already hibernated")
         return false
     end
-    
-    local targetName = UnitName("target")
-   
-    if not UnitExists("target") or UnitName("target") ~= targetName then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Failed to re-acquire target")
-        return false
-    end
-    
+
+    -- Check mana
     if UnitMana("player") < 10 then
         return false
     end
-    
-    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Casting Hibernate on gouged target")
+
+    -- If we get here, cast hibernate
+    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Hibernating "..UnitName("target"))
     CastSpellByName(HIBERNATE_SPELL)
     return true
 end
@@ -694,13 +717,6 @@ local function CheckAndHeal()
 end
 
 local function CastDamageSpells()
-    if not damageAssistEnabled then 
-        return false 
-    end
-    if UnitMana("player")/UnitManaMax("player")*100 < MIN_MANA_DAMAGE then
-        return false
-    end
-
     -- Improved target acquisition logic (works for all modes)
     local foundValidTarget = false
     for i=1,4 do
@@ -732,31 +748,47 @@ local function CastDamageSpells()
         return false
     end
 
-    -- Standard DPS rotation
+    -- Skip damage if target is Gouged or Hibernated
+    if IsTargetGouged() then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is gouged - skipping damage")
+        return false
+    end
+
     if IsTargetHibernated() then
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is hibernated - skipping damage")
         return false
     end
 
+    -- Always allow Faerie Fire regardless of DPS mode setting
     if faerieFireEnabled and not HasDebuff("target", FAERIE_FIRE_TEXTURE) then
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Faerie Fire on "..UnitName("target"))
         CastSpellByName(FAERIE_FIRE_SPELL)
         return true
     end
 
-    if insectSwarmEnabled and not HasDebuff("target", IS_TEXTURE) and not IsTargetHibernated() then
+    -- Only proceed with damage spells if DPS mode is enabled
+    if not damageAssistEnabled then
+        return false
+    end
+
+    if UnitMana("player")/UnitManaMax("player")*100 < MIN_MANA_DAMAGE then
+        return false
+    end
+
+    -- Standard DPS rotation
+    if insectSwarmEnabled and not HasDebuff("target", IS_TEXTURE) then
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Insect Swarm on "..UnitName("target"))
         CastSpellByName(IS_SPELL)
         return true
     end
 
-    if moonfireEnabled and not HasDebuff("target", MOONFIRE_TEXTURE) and not IsTargetHibernated() then
+    if moonfireEnabled and not HasDebuff("target", MOONFIRE_TEXTURE) then
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Moonfire on "..UnitName("target"))
         CastSpellByName(MOONFIRE_SPELL)
         return true
     end
 
-    if wrathEnabled and not IsTargetHibernated() then
+    if wrathEnabled then
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Casting Wrath on "..UnitName("target"))
         CastSpellByName(WRATH_SPELL)
         return true
@@ -784,7 +816,7 @@ local function ShouldLeaveCatFormForHealing()
         for i=1,4 do
             local unit = "party"..i
             if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and not IsUnitHostile(unit) and 
-               (UnitHealth(unit) / UnitHealthMax(unit)) * 100 <= 40 then
+               (UnitHealth(unit) / UnitHealthMax(unit)) * 100 <= 60 then
                 return true
             end
         end
@@ -878,6 +910,10 @@ local function HandleSprintFollowing()
 end
 
 local function DoDribbleActions()
+        -- Handle special cases
+if UnitExists("target") and IsTargetGouged() then
+    if HandleGougedTarget() then return end
+end
     UpdateExpectedHoTHealing() -- Update expected HoT healing first
     
     -- Check if we should exit temporary DPS mode
@@ -1025,11 +1061,6 @@ local function DoDribbleActions()
         if CastDamageSpells() then return end
     end
 
-    -- Handle special cases
-    if UnitExists("target") and IsTargetGouged() then
-        if HandleGougedTarget() then return end
-    end
-
     -- Final fallback
     if catModeEnabled and not IsInForm(CAT_FORM_TEXTURE) and not tempDPSMode then
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (fallback)")
@@ -1095,9 +1126,9 @@ local function ToggleDamageAssistMode()
     damageAssistEnabled = not damageAssistEnabled
     if damageAssistEnabled then
         catModeEnabled = false
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: DPS mode enabled (Cat mode disabled)")
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Full DPS mode enabled (Cat mode disabled - all offensive spells active)")
     else
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: DPS mode disabled")
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Damage spells disabled (still casting Faerie Fire and assisting party)")
     end
 end
 
