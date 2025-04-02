@@ -16,6 +16,8 @@ local CAT_FORM_SPELL = "Cat Form"
 local PROWL_SPELL = "Prowl"
 local WRATH_SPELL = "Wrath"
 local SWIFTMEND_SPELL = "Swiftmend"
+local ABOLISH_POISON_SPELL = "Abolish Poison"
+local REMOVE_CURSE_SPELL = "Remove Curse"
 
 -- Add these with the other spell names
 local CLAW_SPELL = "Claw"
@@ -39,6 +41,8 @@ local CAT_FORM_TEXTURE = "Ability_Druid_CatForm"
 local PROWL_TEXTURE = "Ability_Ambush"
 local STEALTH_TEXTURE = "Ability_Stealth"
 local WRATH_TEXTURE = "Spell_Nature_Earthquake"
+local POISON_TEXTURE = "Poison" -- This is a partial match for poison debuff textures
+local CURSE_TEXTURE = "Curse" -- This is a partial match for curse debuff textures
 
 local expectedHoTHealing = {} -- Tracks expected HoT healing per unit
 local catModeEnabled = false
@@ -614,6 +618,108 @@ local function CheckRejuvenation()
     return didHeal
 end
 
+-- Modify HasPoisonDebuff to be more inclusive:
+local function HasPoisonDebuff(unit)
+    if not UnitExists(unit) then return false end
+
+    for i = 1, 16 do
+        local debuffTexture = UnitDebuff(unit, i)
+        if debuffTexture then
+            GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")
+            GameTooltip:SetUnitDebuff(unit, i)
+            local tooltipText = GameTooltipTextLeft1:GetText()
+            GameTooltip:Hide()
+
+            -- Expanded poison detection
+            if tooltipText and (
+                strfind(tooltipText, "Poison") or 
+                strfind(tooltipText, "poison") or
+                strfind(debuffTexture, "Poison") or
+                strfind(debuffTexture, "poison")
+            ) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function HasCurseDebuff(unit)
+    if not UnitExists(unit) then
+        return false
+    end
+
+    for i = 1, 16 do
+        local debuffTexture = UnitDebuff(unit, i)
+        if debuffTexture then
+            -- Use GameTooltip to get the debuff name
+            GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")
+            GameTooltip:SetUnitDebuff(unit, i)
+            local tooltipText = GameTooltipTextLeft1:GetText()
+            GameTooltip:Hide()
+
+            -- Expanded curse detection - checks both tooltip text and texture
+            if tooltipText and (
+                strfind(tooltipText, "Curse") or 
+                strfind(tooltipText, "curse") or
+                strfind(debuffTexture, "Curse") or
+                strfind(debuffTexture, "curse") --or
+                --strfind(debuffTexture, "Hex") or    -- Some curses use "Hex" in name/texture
+                --strfind(debuffTexture, "hex")
+            ) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function CheckAbolishPoison()
+    -- Check player first
+    if not UnitIsDeadOrGhost("player") and HasPoisonDebuff("player") and not HasBuff("player", ABOLISH_POISON_SPELL) then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Casting Abolish Poison on self")
+        CastSpellByName(ABOLISH_POISON_SPELL)
+        SpellTargetUnit("player")
+        return true
+    end
+
+    -- Check party members
+    for i=1,4 do
+        local unit = "party"..i
+        if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and HasPoisonDebuff(unit) and not HasBuff(unit, ABOLISH_POISON_SPELL) then
+            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Casting Abolish Poison on "..UnitName(unit))
+            CastSpellByName(ABOLISH_POISON_SPELL)
+            SpellTargetUnit(unit)
+            return true
+        end
+    end
+
+    return false
+end
+
+local function CheckRemoveCurse()
+    -- Check player first
+    if not UnitIsDeadOrGhost("player") and HasCurseDebuff("player") then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Removing curse from self")
+        CastSpellByName(REMOVE_CURSE_SPELL)
+        SpellTargetUnit("player")
+        return true
+    end
+
+    -- Check party members
+    for i=1,4 do
+        local unit = "party"..i
+        if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and HasCurseDebuff(unit) then
+            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Removing curse from "..UnitName(unit))
+            CastSpellByName(REMOVE_CURSE_SPELL)
+            SpellTargetUnit(unit)
+            return true
+        end
+    end
+
+    return false
+end
+
 local function CheckAndHeal()
     if IsInForm(PROWL_TEXTURE) then
         return false
@@ -808,7 +914,7 @@ local function ShouldLeaveCatFormForHealing()
     if catModeEnabled and UnitAffectingCombat("player") then
         -- Check player first
         if not UnitIsDeadOrGhost("player") and not IsUnitHostile("player") and 
-           (UnitHealth("player") / UnitHealthMax("player")) * 100 <= 60 then
+           (UnitHealth("player") / UnitHealthMax("player")) * 100 <= 50 then  -- Lowered threshold to 50%
             return true
         end
         
@@ -816,7 +922,7 @@ local function ShouldLeaveCatFormForHealing()
         for i=1,4 do
             local unit = "party"..i
             if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and not IsUnitHostile(unit) and 
-               (UnitHealth(unit) / UnitHealthMax(unit)) * 100 <= 60 then
+               (UnitHealth(unit) / UnitHealthMax(unit)) * 100 <= 40 then  -- Lowered threshold to 40% for party
                 return true
             end
         end
@@ -910,13 +1016,19 @@ local function HandleSprintFollowing()
 end
 
 local function DoDribbleActions()
-        -- Handle special cases
-if UnitExists("target") and IsTargetGouged() then
-    if HandleGougedTarget() then return end
-end
+    -- Handle special cases
+    if UnitExists("target") and IsTargetGouged() then
+        if HandleGougedTarget() then return end
+    end
+    
+    -- Check for poison debuffs
+    if CheckAbolishPoison() then return end
+
+    if CheckRemoveCurse() then return end
+    
     UpdateExpectedHoTHealing() -- Update expected HoT healing first
     
-    -- Check if we should exit temporary DPS mode
+    -- Check if we should exit temporary DPS mode (only when combat ends)
     if tempDPSMode and not UnitAffectingCombat("player") then
         tempDPSMode = false
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Combat ended - returning to Cat Mode")
@@ -966,10 +1078,10 @@ end
         -- First handle emergency healing
         if CheckSwiftmend() then return end
         
-        -- Check if anyone needs healing (below 70%)
+        -- Check if anyone needs healing (below 60%)
         local needsHeal = false
         if not UnitIsDeadOrGhost("player") and not IsUnitHostile("player") and 
-           (UnitHealth("player") / UnitHealthMax("player")) * 100 < 70 then
+           (UnitHealth("player") / UnitHealthMax("player")) * 100 < 60 then
             needsHeal = true
         end
         
@@ -977,7 +1089,7 @@ end
             for i=1,4 do
                 local unit = "party"..i
                 if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and not IsUnitHostile(unit) and 
-                   (UnitHealth(unit) / UnitHealthMax(unit)) * 100 < 70 then
+                   (UnitHealth(unit) / UnitHealthMax(unit)) * 100 < 60 then
                     needsHeal = true
                     break
                 end
@@ -1000,6 +1112,8 @@ end
                 damageAssistEnabled = oldDPSState
             end
         end
+        
+        -- Don't return to cat form until combat ends
         return
     end
 
@@ -1061,7 +1175,7 @@ end
         if CastDamageSpells() then return end
     end
 
-    -- Final fallback
+    -- Final fallback - only return to cat form if not in tempDPSMode
     if catModeEnabled and not IsInForm(CAT_FORM_TEXTURE) and not tempDPSMode then
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (fallback)")
         CastSpellByName(CAT_FORM_SPELL)
