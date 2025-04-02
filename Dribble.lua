@@ -42,6 +42,7 @@ local WRATH_TEXTURE = "Spell_Nature_Earthquake"
 
 local expectedHoTHealing = {} -- Tracks expected HoT healing per unit
 local catModeEnabled = false
+local tempDPSMode = false
 
 -- Healing Configuration
 local HEALING_TOUCH_RANKS = {
@@ -153,6 +154,10 @@ local function HasDebuff(unit, texturePattern)
     return false
 end
 
+local function IsUnitHostile(unit)
+    return UnitExists(unit) and UnitCanAttack("player", unit) and not UnitIsDeadOrGhost(unit)
+end
+
 local function IsTargetGouged()
     if not UnitExists("target") or not UnitCanAttack("player", "target") then
         return false
@@ -218,7 +223,7 @@ local function HandleStealthFollowing()
     
     if IsInForm(PROWL_TEXTURE) then
         if not (UnitExists(followTarget) and HasBuff(followTarget, STEALTH_TEXTURE)) then
-            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Party member left stealth - leaving prowl")
+            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Follow target left stealth - leaving prowl")
             CastSpellByName(PROWL_SPELL)
             return false
         end
@@ -423,7 +428,7 @@ local function GetAppropriateRejuvRank(missingHealth, unit)
 end
 
 local function CheckUnitSwiftmend(unit)
-    if not UnitExists(unit) or UnitIsDeadOrGhost(unit) or not IsInRange(unit) then
+    if not UnitExists(unit) or UnitIsDeadOrGhost(unit) or not IsInRange(unit) and not IsUnitHostile("player") then
         return false
     end
     
@@ -546,7 +551,7 @@ local function CheckRejuvenation()
 
     local didHeal = false
     
-    if not UnitIsDeadOrGhost("player") and IsInRange("player") then
+    if not UnitIsDeadOrGhost("player") and IsInRange("player") and not IsUnitHostile("player") then
         local currentHP = UnitHealth("player")
         local maxHP = UnitHealthMax("player")
         local missing = maxHP - currentHP
@@ -565,7 +570,7 @@ local function CheckRejuvenation()
 
     for i=1,4 do
         local unit = "party"..i
-        if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and IsInRange(unit) then
+        if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and IsInRange(unit) and not IsUnitHostile("player") then
             local currentHP = UnitHealth(unit)
             local maxHP = UnitHealthMax(unit)
             local missing = maxHP - currentHP
@@ -597,7 +602,7 @@ local function CheckAndHeal()
     local effectiveMissing = 0
 
     -- Check player first
-    if not UnitIsDeadOrGhost("player") and IsInRange("player") then
+    if not UnitIsDeadOrGhost("player") and IsInRange("player") and not IsUnitHostile("player") then
         local currentHP = UnitHealth("player")
         local maxHP = UnitHealthMax("player")
         local missing = maxHP - currentHP
@@ -614,7 +619,7 @@ local function CheckAndHeal()
     -- Check party members
     for i=1,4 do
         local unit = "party"..i
-        if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and IsInRange(unit) then
+        if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and IsInRange(unit) and not IsUnitHostile("player") then
             local currentHP = UnitHealth(unit)
             local maxHP = UnitHealthMax(unit)
             local missing = maxHP - currentHP
@@ -689,52 +694,74 @@ local function CheckAndHeal()
 end
 
 local function CastDamageSpells()
-    if not damageAssistEnabled then return false end
+    if not damageAssistEnabled then 
+        return false 
+    end
     if UnitMana("player")/UnitManaMax("player")*100 < MIN_MANA_DAMAGE then
         return false
     end
 
+    -- Improved target acquisition logic (works for all modes)
+    local foundValidTarget = false
     for i=1,4 do
         local member = "party"..i
         if UnitExists(member) then
             local target = member.."target"
             if UnitExists(target) and UnitCanAttack("player", target) and not UnitIsDeadOrGhost(target) then
-                TargetUnit(target)
-
-                if IsInRange(target) then
-                    if IsTargetHibernated() then
-                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is hibernated - skipping damage")
-                        return false
-                    end
-                    
-                    if faerieFireEnabled and not HasDebuff(target, FAERIE_FIRE_TEXTURE) then
-                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Faerie Fire on "..UnitName(target))
-                        AssistUnit(member)
-                        CastSpellByName(FAERIE_FIRE_SPELL)
-                        return true
-                    end
-                    if insectSwarmEnabled and not HasDebuff(target, IS_TEXTURE) and not IsTargetHibernated() then
-                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Insect Swarm on "..UnitName(target))
-                        AssistUnit(member)
-                        CastSpellByName(IS_SPELL)
-                        return true
-                    end
-                    if moonfireEnabled and not HasDebuff(target, MOONFIRE_TEXTURE) and not IsTargetHibernated() then
-                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Moonfire on "..UnitName(target))
-                        AssistUnit(member)
-                        CastSpellByName(MOONFIRE_SPELL)
-                        return true
-                    end
-                    if wrathEnabled and not IsTargetHibernated() then
-                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Casting Wrath on "..UnitName(target))
-                        AssistUnit(member)
-                        CastSpellByName(WRATH_SPELL)
-                        return true
-                    end
+                -- Always update target to match party member's current target
+                if not UnitExists("target") or not UnitIsUnit("target", target) then
+                    TargetUnit(target)
+                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Assisting "..UnitName(member).." on "..UnitName(target))
                 end
+                foundValidTarget = true
+                break
             end
         end
     end
+
+    if not foundValidTarget then
+        if UnitExists("target") and (UnitIsDeadOrGhost("target") or not UnitCanAttack("player", "target")) then
+            ClearTarget()
+        end
+        return false
+    end
+
+    -- Additional check in case target became invalid
+    if not UnitExists("target") or not UnitCanAttack("player", "target") or UnitIsDeadOrGhost("target") then
+        ClearTarget()
+        return false
+    end
+
+    -- Standard DPS rotation
+    if IsTargetHibernated() then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is hibernated - skipping damage")
+        return false
+    end
+
+    if faerieFireEnabled and not HasDebuff("target", FAERIE_FIRE_TEXTURE) then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Faerie Fire on "..UnitName("target"))
+        CastSpellByName(FAERIE_FIRE_SPELL)
+        return true
+    end
+
+    if insectSwarmEnabled and not HasDebuff("target", IS_TEXTURE) and not IsTargetHibernated() then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Insect Swarm on "..UnitName("target"))
+        CastSpellByName(IS_SPELL)
+        return true
+    end
+
+    if moonfireEnabled and not HasDebuff("target", MOONFIRE_TEXTURE) and not IsTargetHibernated() then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Moonfire on "..UnitName("target"))
+        CastSpellByName(MOONFIRE_SPELL)
+        return true
+    end
+
+    if wrathEnabled and not IsTargetHibernated() then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Casting Wrath on "..UnitName("target"))
+        CastSpellByName(WRATH_SPELL)
+        return true
+    end
+
     return false
 end
 
@@ -745,27 +772,20 @@ local function ShouldLeaveCatFormForHealing()
         return false
     end
     
-    -- In cat mode, only heal if in combat AND someone is critically low
+    -- Only leave cat form for critical heals in combat
     if catModeEnabled and UnitAffectingCombat("player") then
         -- Check player first
-        if not UnitIsDeadOrGhost("player") and (UnitHealth("player") / UnitHealthMax("player")) * 100 <= 40 then
-            local missingHealth = UnitHealthMax("player") - UnitHealth("player")
-            if GetAppropriateHealRank(missingHealth, "player") then
-                DEFAULT_CHAT_FRAME:AddMessage("Dribble: Critical heal needed (Player at "..math.floor((UnitHealth("player") / UnitHealthMax("player")) * 100).."%)")
-                return true
-            end
+        if not UnitIsDeadOrGhost("player") and not IsUnitHostile("player") and 
+           (UnitHealth("player") / UnitHealthMax("player")) * 100 <= 60 then
+            return true
         end
         
         -- Check party members
         for i=1,4 do
             local unit = "party"..i
-            if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and 
+            if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and not IsUnitHostile(unit) and 
                (UnitHealth(unit) / UnitHealthMax(unit)) * 100 <= 40 then
-                local missingHealth = UnitHealthMax(unit) - UnitHealth(unit)
-                if GetAppropriateHealRank(missingHealth, unit) then
-                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Critical heal needed ("..UnitName(unit).." at "..math.floor((UnitHealth(unit) / UnitHealthMax(unit)) * 100).."%)")
-                    return true
-                end
+                return true
             end
         end
         return false
@@ -776,79 +796,65 @@ local function ShouldLeaveCatFormForHealing()
 end
 
 local function HandleCatFormDPS()
-    -- First try to get a target from party members
-    local foundTarget = false
+    -- Target acquisition (same as before)
     for i=1,4 do
         local member = "party"..i
         if UnitExists(member) then
             local target = member.."target"
             if UnitExists(target) and UnitCanAttack("player", target) and not UnitIsDeadOrGhost(target) then
-                if not UnitExists("target") or UnitName("target") ~= UnitName(target) then
+                if not UnitExists("target") or not UnitIsUnit("target", target) then
                     TargetUnit(target)
                     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Assisting "..UnitName(member).." on "..UnitName(target))
-                    foundTarget = true
-                    break
-                else
-                    foundTarget = true
-                    break
                 end
+                break
             end
         end
     end
 
-    if not foundTarget then
-        return false
-    end
-    
-    if not UnitExists("target") or not UnitCanAttack("player", "target") or UnitIsDeadOrGhost("target") then
-        return false
-    end
-    
+    -- Must be in cat form to continue
     if not IsInForm(CAT_FORM_TEXTURE) then
         return false
     end
-    
+
+    -- Clear invalid targets (including fleeing mobs)
+    if UnitExists("target") and (not UnitCanAttack("player", "target") or UnitIsDeadOrGhost("target")) then
+        ClearTarget()
+        return false
+    end
+
+    -- Start attacking if not already
+    if not IsCurrentAction(60) then
+        AttackTarget()
+    end
+
+    -- ONLY use cat form abilities
     local comboPoints = GetComboPoints()
     
-    if not IsCurrentAction(60) then
-    AttackTarget()
-    end
-    -- Use Ferocious Bite at 5 combo points
     if comboPoints >= 2 then
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Using Ferocious Bite (2 combo points)")
         CastSpellByName(FEROCIOUS_BITE_SPELL)
         return true
     end
     
-    -- Default to Claw to build combo points
     DEFAULT_CHAT_FRAME:AddMessage("Dribble: Using Claw to build combo points")
     CastSpellByName(CLAW_SPELL)
     return true
 end
 
 local function HandleSprintFollowing()
-    if not followEnabled or UnitAffectingCombat("player") then 
+    if not followEnabled or UnitAffectingCombat("player") or not UnitExists(followTarget) or not IsInRange(followTarget) then 
         return false 
     end
     
-    -- Check if any party member is sprinting
-    local partyMemberSprinting = false
-    for i=1,4 do
-        local unit = "party"..i
-        if UnitExists(unit) and HasBuff(unit, SPRINT_TEXTURE) then
-            partyMemberSprinting = true
-            break
-        end
-    end
-    
-    if not partyMemberSprinting then
+    -- Check if our follow target is sprinting
+    if not HasBuff(followTarget, SPRINT_TEXTURE) then
         return false
     end
     
     -- If we're already dashing, just maintain cat form
     if IsInForm(DASH_TEXTURE) then
         if not IsInForm(CAT_FORM_TEXTURE) then
-            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Party member sprinting - entering Cat Form to maintain Dash")
+            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Follow target sprinting - entering Cat Form to maintain Dash")
             CastSpellByName(CAT_FORM_SPELL)
         end
         return true
@@ -856,14 +862,14 @@ local function HandleSprintFollowing()
     
     -- Enter cat form if not already
     if not IsInForm(CAT_FORM_TEXTURE) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Party member sprinting - entering Cat Form")
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Follow target sprinting - entering Cat Form")
         CastSpellByName(CAT_FORM_SPELL)
         return true
     end
     
     -- Cast dash if in cat form and not already dashing
     if IsInForm(CAT_FORM_TEXTURE) and not IsInForm(DASH_TEXTURE) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Party member sprinting - using Dash to keep up")
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Follow target sprinting - using Dash to keep up")
         CastSpellByName(DASH_SPELL)
         return true
     end
@@ -873,6 +879,12 @@ end
 
 local function DoDribbleActions()
     UpdateExpectedHoTHealing() -- Update expected HoT healing first
+    
+    -- Check if we should exit temporary DPS mode
+    if tempDPSMode and not UnitAffectingCombat("player") then
+        tempDPSMode = false
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Combat ended - returning to Cat Mode")
+    end
     
     -- Handle follow (works in all modes)
     if followEnabled and UnitExists(followTarget) and not IsInForm(PROWL_TEXTURE) then
@@ -913,52 +925,89 @@ local function DoDribbleActions()
         end
     end
 
-    -- Make catmode and dpsmode mutually exclusive
+    -- In temporary DPS mode (after leaving cat form to heal)
+    if tempDPSMode then
+        -- First handle emergency healing
+        if CheckSwiftmend() then return end
+        
+        -- Check if anyone needs healing (below 70%)
+        local needsHeal = false
+        if not UnitIsDeadOrGhost("player") and not IsUnitHostile("player") and 
+           (UnitHealth("player") / UnitHealthMax("player")) * 100 < 70 then
+            needsHeal = true
+        end
+        
+        if not needsHeal then
+            for i=1,4 do
+                local unit = "party"..i
+                if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and not IsUnitHostile(unit) and 
+                   (UnitHealth(unit) / UnitHealthMax(unit)) * 100 < 70 then
+                    needsHeal = true
+                    break
+                end
+            end
+        end
+        
+        -- Perform healing if needed
+        if needsHeal then
+            if CheckRejuvenation() then return end
+            if CheckAndHeal() then return end
+        else
+            -- No healing needed - do DPS but never on fleeing mobs
+            if UnitExists("target") and UnitCanAttack("player", "target") and not UnitIsDeadOrGhost("target") then
+                local oldDPSState = damageAssistEnabled
+                damageAssistEnabled = true
+                if CastDamageSpells() then
+                    damageAssistEnabled = oldDPSState
+                    return
+                end
+                damageAssistEnabled = oldDPSState
+            end
+        end
+        return
+    end
+
+    -- Original cat mode logic
     if catModeEnabled then
         damageAssistEnabled = false
         
-        -- Cat Mode logic
         if not UnitAffectingCombat("player") then
-            -- Out of combat - allow normal healing but default to cat form
+            -- Out of combat behavior
             if CheckSwiftmend() then return end
             if CheckRejuvenation() then return end
             if CheckAndHeal() then return end
             
-            -- Default to cat form when nothing else to do
+            -- Default to cat form when idle
             if not IsInForm(CAT_FORM_TEXTURE) then
-                DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (idle in cat mode)")
+                DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (idle)")
                 CastSpellByName(CAT_FORM_SPELL)
                 return
             end
             
-            -- Try to assist party members even when not in combat
+            -- Assist party members
             if HandleCatFormDPS() then
                 return
             end
         else
-            -- In combat - check for critical heals first
+            -- In combat - check for critical heals
             if ShouldLeaveCatFormForHealing() then
                 if IsInForm(CAT_FORM_TEXTURE) then
-                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Leaving cat form for critical healing")
+                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Leaving cat form for critical healing - entering Temp DPS Mode")
                     CastSpellByName(CAT_FORM_SPELL) -- Leave form
+                    tempDPSMode = true -- Enter temporary DPS mode
                     return
                 else
-                    -- NEW: Actually perform the healing when not in cat form
+                    -- We're already out of cat form (in temp DPS mode)
                     if CheckSwiftmend() then return end
                     if CheckRejuvenation() then return end
                     if CheckAndHeal() then return end
                     
-                    -- After healing, return to cat form if no more heals needed
-                    if not ShouldLeaveCatFormForHealing() then
-                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Critical heals complete - returning to cat form")
-                        CastSpellByName(CAT_FORM_SPELL)
-                        return
-                    end
+                    -- No more healing needed - stay in temp DPS mode until combat ends
                 end
             else
                 -- Stay in cat form and DPS
-                if not IsInForm(CAT_FORM_TEXTURE) then
-                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (combat in cat mode)")
+                if not IsInForm(CAT_FORM_TEXTURE) and not tempDPSMode then
+                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (combat)")
                     CastSpellByName(CAT_FORM_SPELL)
                     return
                 end
@@ -973,24 +1022,20 @@ local function DoDribbleActions()
         if CheckSwiftmend() then return end
         if CheckRejuvenation() then return end
         if CheckAndHeal() then return end
+        if CastDamageSpells() then return end
     end
 
-    -- Handle other actions
+    -- Handle special cases
     if UnitExists("target") and IsTargetGouged() then
         if HandleGougedTarget() then return end
     end
 
-    if not catModeEnabled and CastDamageSpells() then 
-        return 
-    end
-
-    -- Final fallback - ensure in cat form if in cat mode with nothing else to do
-    if catModeEnabled and not IsInForm(CAT_FORM_TEXTURE) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (fallback in cat mode)")
+    -- Final fallback
+    if catModeEnabled and not IsInForm(CAT_FORM_TEXTURE) and not tempDPSMode then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (fallback)")
         CastSpellByName(CAT_FORM_SPELL)
         return
     end
-
 end
 
 local function ToggleFollowMode()
@@ -1103,6 +1148,7 @@ end
 
 local function ToggleCatMode()
     catModeEnabled = not catModeEnabled
+    tempDPSMode = false -- Reset temporary DPS mode when toggling
     if catModeEnabled then
         damageAssistEnabled = false
         DEFAULT_CHAT_FRAME:AddMessage("Dribble: Cat mode enabled (DPS mode disabled)")
