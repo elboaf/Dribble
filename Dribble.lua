@@ -83,9 +83,10 @@ local REGROWTH_RANKS = {
 -- Add Rejuvenation ranks configuration
 local REJUVENATION_RANKS = {
     { name = "Rejuvenation(Rank 1)", amount = 32, mana = 25, duration = 12 },
-    { name = "Rejuvenation(Rank 2)", amount = 56, mana = 50, duration = 12 },
-    { name = "Rejuvenation(Rank 3)", amount = 116, mana = 100, duration = 12 },
-    { name = "Rejuvenation(Rank 4)", amount = 180, mana = 170, duration = 12 }
+    { name = "Rejuvenation(Rank 2)", amount = 56, mana = 40, duration = 12 },
+    { name = "Rejuvenation(Rank 3)", amount = 116, mana = 75, duration = 12 },
+    { name = "Rejuvenation(Rank 4)", amount = 180, mana = 105, duration = 12 },
+    { name = "Rejuvenation(Rank 5)", amount = 244, mana = 135, duration = 12 }
 }
 
 -- Healing Thresholds
@@ -627,15 +628,12 @@ local function HasPoisonDebuff(unit)
         if debuffTexture then
             GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")
             GameTooltip:SetUnitDebuff(unit, i)
-            local tooltipText = GameTooltipTextLeft1:GetText()
+            local tooltipText = GameTooltipTextRight1:GetText()
             GameTooltip:Hide()
 
             -- Expanded poison detection
             if tooltipText and (
-                strfind(tooltipText, "Poison") or 
-                strfind(tooltipText, "poison") or
-                strfind(debuffTexture, "Poison") or
-                strfind(debuffTexture, "poison")
+                strfind(tooltipText, "Poison")
             ) then
                 return true
             end
@@ -655,17 +653,12 @@ local function HasCurseDebuff(unit)
             -- Use GameTooltip to get the debuff name
             GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")
             GameTooltip:SetUnitDebuff(unit, i)
-            local tooltipText = GameTooltipTextLeft1:GetText()
+            local tooltipText = GameTooltipTextRight1:GetText()
             GameTooltip:Hide()
 
             -- Expanded curse detection - checks both tooltip text and texture
             if tooltipText and (
-                strfind(tooltipText, "Curse") or 
-                strfind(tooltipText, "curse") or
-                strfind(debuffTexture, "Curse") or
-                strfind(debuffTexture, "curse") --or
-                --strfind(debuffTexture, "Hex") or    -- Some curses use "Hex" in name/texture
-                --strfind(debuffTexture, "hex")
+                strfind(tooltipText, "Curse")
             ) then
                 return true
             end
@@ -912,17 +905,17 @@ local function ShouldLeaveCatFormForHealing()
     
     -- Only leave cat form for critical heals in combat
     if catModeEnabled and UnitAffectingCombat("player") then
-        -- Check player first
+        -- Check player first (30% threshold)
         if not UnitIsDeadOrGhost("player") and not IsUnitHostile("player") and 
-           (UnitHealth("player") / UnitHealthMax("player")) * 100 <= 50 then  -- Lowered threshold to 50%
+           (UnitHealth("player") / UnitHealthMax("player")) * 100 <= 30 then
             return true
         end
         
-        -- Check party members
+        -- Check party members (25% threshold)
         for i=1,4 do
             local unit = "party"..i
             if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and not IsUnitHostile(unit) and 
-               (UnitHealth(unit) / UnitHealthMax(unit)) * 100 <= 40 then  -- Lowered threshold to 40% for party
+               (UnitHealth(unit) / UnitHealthMax(unit)) * 100 <= 25 then
                 return true
             end
         end
