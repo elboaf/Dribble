@@ -48,6 +48,7 @@ local CURSE_TEXTURE = "Curse" -- This is a partial match for curse debuff textur
 local expectedHoTHealing = {} -- Tracks expected HoT healing per unit
 local catModeEnabled = false
 local tempDPSMode = false
+local debugMode = false -- Added debug mode flag
 
 -- Healing Configuration
 local HEALING_TOUCH_RANKS = {
@@ -128,6 +129,13 @@ local swiftmendEnabled = true
 local swiftmendLastUsed = 0
 local hotTimers = {} -- Tracks HoT expiration times per unit
 
+-- Debug message function
+local function DebugMessage(msg)
+    if debugMode then
+        DEFAULT_CHAT_FRAME:AddMessage("Dribble: "..msg)
+    end
+end
+
 local function IsInCombat()
     return UnitAffectingCombat("player")
 end
@@ -187,12 +195,10 @@ local function IsTargetGouged()
             GameTooltip:Hide()
 
             if tooltipText == "Gouge" then
-                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is gouged")
-
+                DebugMessage("Target is gouged")
                 return true
             elseif tooltipText == "Rend" then
-                        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is rended")
-
+                DebugMessage("Target is rended")
                 return false -- It's Rend, not Gouge
             end
         end
@@ -242,12 +248,10 @@ local function HandleGougedTarget()
     end
 
     -- If we get here, cast hibernate
-    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Hibernating "..UnitName("target"))
+    DebugMessage("Hibernating "..UnitName("target"))
     CastSpellByName(HIBERNATE_SPELL)
     return true
 end
-
-
 
 local function HandleStealthFollowing()
     if not followEnabled or UnitAffectingCombat("player") or not IsInRange(followTarget) then 
@@ -260,7 +264,7 @@ local function HandleStealthFollowing()
     
     if IsInForm(PROWL_TEXTURE) then
         if not (UnitExists(followTarget) and HasBuff(followTarget, STEALTH_TEXTURE)) then
-            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Follow target left stealth - leaving prowl")
+            DebugMessage("Follow target left stealth - leaving prowl")
             CastSpellByName(PROWL_SPELL)
             return false
         end
@@ -269,13 +273,13 @@ local function HandleStealthFollowing()
     
     if UnitExists(followTarget) and HasBuff(followTarget, STEALTH_TEXTURE) then
         if not IsInForm(CAT_FORM_TEXTURE) then
-            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Following stealthed target - entering Cat Form")
+            DebugMessage("Following stealthed target - entering Cat Form")
             CastSpellByName(CAT_FORM_SPELL)
             return true
         end
         
         if not IsInForm(PROWL_TEXTURE) then
-            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Following stealthed target - entering Prowl")
+            DebugMessage("Following stealthed target - entering Prowl")
             CastSpellByName(PROWL_SPELL)
             return true
         end
@@ -291,26 +295,26 @@ local function BuffUnit(unit)
 
     -- Never leave stealth if party member is still stealthed
     if IsInForm(PROWL_TEXTURE) and UnitExists(followTarget) and HasBuff(followTarget, STEALTH_TEXTURE) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Maintaining stealth with party member")
+        DebugMessage("Maintaining stealth with party member")
         return false
     end
 
     -- Leave cat form temporarily to buff if needed
     local wasInCatForm = IsInForm(CAT_FORM_TEXTURE)
     if wasInCatForm and (not HasBuff(unit, MOTW_TEXTURE) or not HasBuff(unit, THORNS_TEXTURE)) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Leaving cat form to buff")
+        DebugMessage("Leaving cat form to buff")
         CastSpellByName(CAT_FORM_SPELL) -- Leave form
     end
 
     if not HasBuff(unit, MOTW_TEXTURE) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Buffing "..UnitName(unit))
+        DebugMessage("Buffing "..UnitName(unit))
         CastSpellByName(MOTW_SPELL)
         SpellTargetUnit(unit)
         return true
     end
 
     if not HasBuff(unit, THORNS_TEXTURE) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Buffing "..UnitName(unit))
+        DebugMessage("Buffing "..UnitName(unit))
         CastSpellByName(THORNS_SPELL)
         SpellTargetUnit(unit)
         return true
@@ -318,7 +322,7 @@ local function BuffUnit(unit)
 
     -- Return to cat form if we left it for buffing
     if wasInCatForm and not IsInForm(CAT_FORM_TEXTURE) and catModeEnabled then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Returning to cat form after buffing")
+        DebugMessage("Returning to cat form after buffing")
         CastSpellByName(CAT_FORM_SPELL)
     end
 
@@ -381,7 +385,6 @@ local function GetEffectiveMissingHealth(unit)
     
     return math.max(0, missing - (expectedHoTHealing[unit] or 0))
 end
-
 
 local function RecordHotCast(unit, spellName)
     if not hotTimers[unit] then 
@@ -488,7 +491,7 @@ local function CheckUnitSwiftmend(unit)
         
         -- Prefer to consume Regrowth if it's about to expire
         if regrowthActive and regrowthTimeLeft < 7 then
-            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Swiftmend on %s (Regrowth expiring in %.1fs)", 
+            DebugMessage(format("Swiftmend on %s (Regrowth expiring in %.1fs)", 
                 unit=="player" and "self" or UnitName(unit), regrowthTimeLeft))
             CastSpellByName(SWIFTMEND_SPELL)
             SpellTargetUnit(unit)
@@ -496,7 +499,7 @@ local function CheckUnitSwiftmend(unit)
             consumedHoT = true
         -- Otherwise consume Rejuv if it's about to expire
         elseif not consumedHoT and rejuvActive and rejuvTimeLeft < 4 then
-            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Swiftmend on %s (Rejuvenation expiring in %.1fs)", 
+            DebugMessage(format("Swiftmend on %s (Rejuvenation expiring in %.1fs)", 
                 unit=="player" and "self" or UnitName(unit), rejuvTimeLeft))
             CastSpellByName(SWIFTMEND_SPELL)
             SpellTargetUnit(unit)
@@ -513,7 +516,7 @@ local function CheckUnitSwiftmend(unit)
             end
             
             if minTimePassed then
-                DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Emergency Swiftmend on %s (%d%% HP)", 
+                DebugMessage(format("Emergency Swiftmend on %s (%d%% HP)", 
                     unit=="player" and "self" or UnitName(unit), math.floor(hpPercent)))
                 CastSpellByName(SWIFTMEND_SPELL)
                 SpellTargetUnit(unit)
@@ -596,7 +599,7 @@ local function CheckRejuvenation()
         
         if hpPercent < REJUV_THRESHOLD_PERCENT and not HasBuff("player", REJUVENATION_TEXTURE) then
             local spellName = GetAppropriateRejuvRank(missing, "player")
-            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: %s on self (%d%%, missing %d)", 
+            DebugMessage(format("%s on self (%d%%, missing %d)", 
                 spellName, math.floor(hpPercent), missing))
             CastSpellByName(spellName)
             SpellTargetUnit("player")
@@ -615,7 +618,7 @@ local function CheckRejuvenation()
             
             if hpPercent < REJUV_THRESHOLD_PERCENT and not HasBuff(unit, REJUVENATION_TEXTURE) then
                 local spellName = GetAppropriateRejuvRank(missing, unit)
-                DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: %s on %s (%d%%, missing %d)", 
+                DebugMessage(format("%s on %s (%d%%, missing %d)", 
                     spellName, UnitName(unit), math.floor(hpPercent), missing))
                 CastSpellByName(spellName)
                 SpellTargetUnit(unit)
@@ -667,7 +670,7 @@ end
 local function CheckAbolishPoison()
     -- Check player first
     if not UnitIsDeadOrGhost("player") and HasPoisonDebuff("player") and not HasBuff("player", ABOLISH_POISON_SPELL) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Casting Abolish Poison on self")
+        DebugMessage("Casting Abolish Poison on self")
         CastSpellByName(ABOLISH_POISON_SPELL)
         SpellTargetUnit("player")
         return true
@@ -677,7 +680,7 @@ local function CheckAbolishPoison()
     for i=1,4 do
         local unit = "party"..i
         if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and HasPoisonDebuff(unit) and not HasBuff(unit, ABOLISH_POISON_SPELL) then
-            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Casting Abolish Poison on "..UnitName(unit))
+            DebugMessage("Casting Abolish Poison on "..UnitName(unit))
             CastSpellByName(ABOLISH_POISON_SPELL)
             SpellTargetUnit(unit)
             return true
@@ -690,7 +693,7 @@ end
 local function CheckRemoveCurse()
     -- Check player first
     if not UnitIsDeadOrGhost("player") and HasCurseDebuff("player") then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Removing curse from self")
+        DebugMessage("Removing curse from self")
         CastSpellByName(REMOVE_CURSE_SPELL)
         SpellTargetUnit("player")
         return true
@@ -700,7 +703,7 @@ local function CheckRemoveCurse()
     for i=1,4 do
         local unit = "party"..i
         if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and HasCurseDebuff(unit) then
-            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Removing curse from "..UnitName(unit))
+            DebugMessage("Removing curse from "..UnitName(unit))
             CastSpellByName(REMOVE_CURSE_SPELL)
             SpellTargetUnit(unit)
             return true
@@ -738,7 +741,7 @@ local function CheckEmergencyHeal()
 
     -- Check player first
     if not UnitIsDeadOrGhost("player") and (UnitHealth("player") / UnitHealthMax("player")) * 100 <= 20 then
-        DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: EMERGENCY - Casting Nature's Swiftness (Player at %d%%)", 
+        DebugMessage(format("EMERGENCY - Casting Nature's Swiftness (Player at %d%%)", 
             math.floor((UnitHealth("player") / UnitHealthMax("player")) * 100)))
         CastSpellByName(NATURES_SWIFTNESS_SPELL)
         return true
@@ -749,7 +752,7 @@ local function CheckEmergencyHeal()
         local unit = "party"..i
         if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and IsInRange(unit) and 
            (UnitHealth(unit) / UnitHealthMax(unit)) * 100 <= 20 then
-            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: EMERGENCY - Casting Nature's Swiftness (%s at %d%%)", 
+            DebugMessage(format("EMERGENCY - Casting Nature's Swiftness (%s at %d%%)", 
                 UnitName(unit), math.floor((UnitHealth(unit) / UnitHealthMax(unit)) * 100)))
             CastSpellByName(NATURES_SWIFTNESS_SPELL)
             return true
@@ -822,7 +825,7 @@ local function CheckAndHeal()
             end
             
             if regrowthInfo then
-                DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Healing %s (%d%% HP, missing %d [%d after HoTs]) with %s (%d direct + %d over %d sec)", 
+                DebugMessage(format("Healing %s (%d%% HP, missing %d [%d after HoTs]) with %s (%d direct + %d over %d sec)", 
                     healTarget=="player" and "self" or UnitName(healTarget), 
                     math.floor(lowestHPPercent),
                     UnitHealthMax(healTarget) - UnitHealth(healTarget),
@@ -832,7 +835,7 @@ local function CheckAndHeal()
                     regrowthInfo.hotAmount,
                     regrowthInfo.hotDuration))
             else
-                DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Healing %s (%d%% HP, missing %d [%d after HoTs]) with %s", 
+                DebugMessage(format("Healing %s (%d%% HP, missing %d [%d after HoTs]) with %s", 
                     healTarget=="player" and "self" or UnitName(healTarget), 
                     math.floor(lowestHPPercent),
                     UnitHealthMax(healTarget) - UnitHealth(healTarget),
@@ -840,7 +843,7 @@ local function CheckAndHeal()
                     spellName))
             end
         else
-            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: Healing %s (%d%% HP, missing %d [%d after HoTs]) with %s", 
+            DebugMessage(format("Healing %s (%d%% HP, missing %d [%d after HoTs]) with %s", 
                 healTarget=="player" and "self" or UnitName(healTarget), 
                 math.floor(lowestHPPercent),
                 UnitHealthMax(healTarget) - UnitHealth(healTarget),
@@ -872,7 +875,7 @@ local function CastDamageSpells()
                 -- Always update target to match party member's current target
                 if not UnitExists("target") or not UnitIsUnit("target", target) then
                     TargetUnit(target)
-                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Assisting "..UnitName(member).." on "..UnitName(target))
+                    DebugMessage("Assisting "..UnitName(member).." on "..UnitName(target))
                 end
                 foundValidTarget = true
                 break
@@ -895,18 +898,18 @@ local function CastDamageSpells()
 
     -- Skip damage if target is Gouged or Hibernated
     if IsTargetGouged() then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is gouged - skipping damage")
+        DebugMessage("Target is gouged - skipping damage")
         return false
     end
 
     if IsTargetHibernated() then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Target is hibernated - skipping damage")
+        DebugMessage("Target is hibernated - skipping damage")
         return false
     end
 
     -- Always allow Faerie Fire regardless of DPS mode setting
     if faerieFireEnabled and not HasDebuff("target", FAERIE_FIRE_TEXTURE) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Faerie Fire on "..UnitName("target"))
+        DebugMessage("Faerie Fire on "..UnitName("target"))
         CastSpellByName(FAERIE_FIRE_SPELL)
         return true
     end
@@ -922,19 +925,19 @@ local function CastDamageSpells()
 
     -- Standard DPS rotation
     if insectSwarmEnabled and not HasDebuff("target", IS_TEXTURE) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Insect Swarm on "..UnitName("target"))
+        DebugMessage("Insect Swarm on "..UnitName("target"))
         CastSpellByName(IS_SPELL)
         return true
     end
 
     if moonfireEnabled and not HasDebuff("target", MOONFIRE_TEXTURE) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Moonfire on "..UnitName("target"))
+        DebugMessage("Moonfire on "..UnitName("target"))
         CastSpellByName(MOONFIRE_SPELL)
         return true
     end
 
     if wrathEnabled then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Casting Wrath on "..UnitName("target"))
+        DebugMessage("Casting Wrath on "..UnitName("target"))
         CastSpellByName(WRATH_SPELL)
         return true
     end
@@ -945,7 +948,7 @@ end
 local function ShouldLeaveCatFormForHealing()
     -- Never leave stealth if party member is still stealthed
     if IsInForm(PROWL_TEXTURE) and UnitExists(followTarget) and HasBuff(followTarget, STEALTH_TEXTURE) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Maintaining stealth - skipping heal")
+        DebugMessage("Maintaining stealth - skipping heal")
         return false
     end
     
@@ -981,7 +984,7 @@ local function HandleCatFormDPS()
             if UnitExists(target) and UnitCanAttack("player", target) and not UnitIsDeadOrGhost(target) then
                 if not UnitExists("target") or not UnitIsUnit("target", target) then
                     TargetUnit(target)
-                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Assisting "..UnitName(member).." on "..UnitName(target))
+                    DebugMessage("Assisting "..UnitName(member).." on "..UnitName(target))
                 end
                 break
             end
@@ -1008,12 +1011,12 @@ local function HandleCatFormDPS()
     local comboPoints = GetComboPoints()
     
     if comboPoints >= 2 then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Using Ferocious Bite (2 combo points)")
+        DebugMessage("Using Ferocious Bite (2 combo points)")
         CastSpellByName(FEROCIOUS_BITE_SPELL)
         return true
     end
     
-    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Using Claw to build combo points")
+    DebugMessage("Using Claw to build combo points")
     CastSpellByName(CLAW_SPELL)
     return true
 end
@@ -1031,7 +1034,7 @@ local function HandleSprintFollowing()
     -- If we're already dashing, just maintain cat form
     if IsInForm(DASH_TEXTURE) then
         if not IsInForm(CAT_FORM_TEXTURE) then
-            DEFAULT_CHAT_FRAME:AddMessage("Dribble: Follow target sprinting - entering Cat Form to maintain Dash")
+            DebugMessage("Follow target sprinting - entering Cat Form to maintain Dash")
             CastSpellByName(CAT_FORM_SPELL)
         end
         return true
@@ -1039,14 +1042,14 @@ local function HandleSprintFollowing()
     
     -- Enter cat form if not already
     if not IsInForm(CAT_FORM_TEXTURE) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Follow target sprinting - entering Cat Form")
+        DebugMessage("Follow target sprinting - entering Cat Form")
         CastSpellByName(CAT_FORM_SPELL)
         return true
     end
     
     -- Cast dash if in cat form and not already dashing
     if IsInForm(CAT_FORM_TEXTURE) and not IsInForm(DASH_TEXTURE) then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Follow target sprinting - using Dash to keep up")
+        DebugMessage("Follow target sprinting - using Dash to keep up")
         CastSpellByName(DASH_SPELL)
         return true
     end
@@ -1072,7 +1075,7 @@ local function DoDribbleActions()
     -- Check if we should exit temporary DPS mode (only when combat ends)
     if tempDPSMode and not UnitAffectingCombat("player") then
         tempDPSMode = false
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Combat ended - returning to Cat Mode")
+        DebugMessage("Combat ended - returning to Cat Mode")
     end
     
     -- Handle follow (works in all modes)
@@ -1082,13 +1085,13 @@ local function DoDribbleActions()
 
     -- Handle stealth following (highest priority)
     if HandleStealthFollowing() then 
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Maintaining stealth with party")
+        DebugMessage("Maintaining stealth with party")
         return 
     end
     
     -- Handle sprint following (second highest priority)
     if HandleSprintFollowing() then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Maintaining dash with sprinting party member")
+        DebugMessage("Maintaining dash with sprinting party member")
         return
     end
 
@@ -1170,7 +1173,7 @@ local function DoDribbleActions()
             
             -- Default to cat form when idle
             if not IsInForm(CAT_FORM_TEXTURE) then
-                DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (idle)")
+                DebugMessage("Entering cat form (idle)")
                 CastSpellByName(CAT_FORM_SPELL)
                 return
             end
@@ -1183,7 +1186,7 @@ local function DoDribbleActions()
             -- In combat - check for critical heals
             if ShouldLeaveCatFormForHealing() then
                 if IsInForm(CAT_FORM_TEXTURE) then
-                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Leaving cat form for critical healing - entering Temp DPS Mode")
+                    DebugMessage("Leaving cat form for critical healing - entering Temp DPS Mode")
                     CastSpellByName(CAT_FORM_SPELL) -- Leave form
                     tempDPSMode = true -- Enter temporary DPS mode
                     return
@@ -1198,7 +1201,7 @@ local function DoDribbleActions()
             else
                 -- Stay in cat form and DPS
                 if not IsInForm(CAT_FORM_TEXTURE) and not tempDPSMode then
-                    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (combat)")
+                    DebugMessage("Entering cat form (combat)")
                     CastSpellByName(CAT_FORM_SPELL)
                     return
                 end
@@ -1218,7 +1221,7 @@ local function DoDribbleActions()
 
     -- Final fallback - only return to cat form if not in tempDPSMode
     if catModeEnabled and not IsInForm(CAT_FORM_TEXTURE) and not tempDPSMode then
-        DEFAULT_CHAT_FRAME:AddMessage("Dribble: Entering cat form (fallback)")
+        DebugMessage("Entering cat form (fallback)")
         CastSpellByName(CAT_FORM_SPELL)
         return
     end
@@ -1348,7 +1351,10 @@ local function ToggleCatMode()
     end
 end
 
--- Add with the other slash commands
+local function ToggleDebugMode()
+    debugMode = not debugMode
+    DEFAULT_CHAT_FRAME:AddMessage("Dribble: Debug mode "..(debugMode and "enabled" or "disabled"))
+end
 
 -- Slash commands
 SLASH_DRIBBLE1 = "/dribble"
@@ -1365,6 +1371,7 @@ SLASH_DRIBBLEINSECTSWARM1 = "/dribbleinsectswarm"
 SLASH_DRIBBLEWRATH1 = "/dribblewrath"
 SLASH_DRIBBLESWIFTMEND1 = "/dribbleswiftmend"
 SLASH_DRIBBLECATMODE1 = "/dribblecatmode"
+SLASH_DRIBBLEDEBUG1 = "/dribbledebug"
 
 SlashCmdList["DRIBBLE"] = function()
     DoDribbleActions()
@@ -1383,3 +1390,4 @@ SlashCmdList["DRIBBLEINSECTSWARM"] = ToggleInsectSwarm
 SlashCmdList["DRIBBLEWRATH"] = ToggleWrath
 SlashCmdList["DRIBBLESWIFTMEND"] = ToggleSwiftmend
 SlashCmdList["DRIBBLECATMODE"] = ToggleCatMode
+SlashCmdList["DRIBBLEDEBUG"] = ToggleDebugMode
