@@ -18,6 +18,7 @@ local WRATH_SPELL = "Wrath"
 local SWIFTMEND_SPELL = "Swiftmend"
 local ABOLISH_POISON_SPELL = "Abolish Poison"
 local REMOVE_CURSE_SPELL = "Remove Curse"
+local NATURES_SWIFTNESS_SPELL = "Nature's Swiftness"
 
 -- Add these with the other spell names
 local CLAW_SPELL = "Claw"
@@ -53,7 +54,8 @@ local HEALING_TOUCH_RANKS = {
     { name = "Healing Touch(Rank 1)", amount = 55, mana = 25 },
     { name = "Healing Touch(Rank 2)", amount = 119, mana = 55 },
     { name = "Healing Touch(Rank 3)", amount = 253, mana = 110 },
-    { name = "Healing Touch(Rank 4)", amount = 456, mana = 185 }
+    { name = "Healing Touch(Rank 4)", amount = 456, mana = 185 },
+    { name = "Healing Touch(Rank 5)", amount = 650, mana = 264 }
 }
 
 local REGROWTH_RANKS = {
@@ -76,6 +78,13 @@ local REGROWTH_RANKS = {
         directAmount = 274,     -- Direct heal amount
         hotAmount = 259,        -- Total HoT amount (45 per tick for 7 ticks)
         mana = 224, 
+        hotDuration = 21 
+    },
+        { 
+        name = "Regrowth(Rank 4)", 
+        directAmount = 360,     -- Direct heal amount
+        hotAmount = 343,        -- Total HoT amount (45 per tick for 7 ticks)
+        mana = 274, 
         hotDuration = 21 
     }
 }
@@ -619,51 +628,39 @@ local function CheckRejuvenation()
     return didHeal
 end
 
--- Modify HasPoisonDebuff to be more inclusive:
 local function HasPoisonDebuff(unit)
-    if not UnitExists(unit) then return false end
-
-    for i = 1, 16 do
-        local debuffTexture = UnitDebuff(unit, i)
-        if debuffTexture then
-            GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")
-            GameTooltip:SetUnitDebuff(unit, i)
-            local tooltipText = GameTooltipTextRight1:GetText()
-            GameTooltip:Hide()
-
-            -- Expanded poison detection
-            if tooltipText and (
-                strfind(tooltipText, "Poison")
-            ) then
-                return true
-            end
+    if not UnitExists(unit) then 
+        return false 
+    end
+    
+    for i = 1, 64 do  -- Max debuff slots per Turtle WoW
+        local texture, _, dispelType = UnitDebuff(unit, i)
+        if not texture then break end  -- No more debuffs
+        
+        -- Check both dispel type and texture as fallback
+        if dispelType == "Poison" or (texture and strfind(string.lower(texture), "poison")) then
+            return true
         end
     end
+    
     return false
 end
 
 local function HasCurseDebuff(unit)
-    if not UnitExists(unit) then
-        return false
+    if not UnitExists(unit) then 
+        return false 
     end
-
-    for i = 1, 16 do
-        local debuffTexture = UnitDebuff(unit, i)
-        if debuffTexture then
-            -- Use GameTooltip to get the debuff name
-            GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")
-            GameTooltip:SetUnitDebuff(unit, i)
-            local tooltipText = GameTooltipTextRight1:GetText()
-            GameTooltip:Hide()
-
-            -- Expanded curse detection - checks both tooltip text and texture
-            if tooltipText and (
-                strfind(tooltipText, "Curse")
-            ) then
-                return true
-            end
+    
+    for i = 1, 64 do
+        local texture, _, dispelType = UnitDebuff(unit, i)
+        if not texture then break end
+        
+        -- Check both dispel type and texture as fallback
+        if dispelType == "Curse" or (texture and strfind(string.lower(texture), "curse")) then
+            return true
         end
     end
+    
     return false
 end
 
@@ -706,6 +703,55 @@ local function CheckRemoveCurse()
             DEFAULT_CHAT_FRAME:AddMessage("Dribble: Removing curse from "..UnitName(unit))
             CastSpellByName(REMOVE_CURSE_SPELL)
             SpellTargetUnit(unit)
+            return true
+        end
+    end
+
+    return false
+end
+
+local function CheckEmergencyHeal()
+    -- Find Nature's Swiftness in spellbook
+    local nsIndex = nil
+    for i = 1, 180 do  -- Scan all spellbook slots
+        local spellName = GetSpellName(i, BOOKTYPE_SPELL)
+        if spellName and spellName == NATURES_SWIFTNESS_SPELL then
+            nsIndex = i
+            break
+        end
+    end
+    
+    -- Check if Nature's Swiftness is ready (not on cooldown)
+    if not nsIndex then
+        return false  -- Spell not found in spellbook
+    end
+    
+    local start, duration = GetSpellCooldown(nsIndex, BOOKTYPE_SPELL)
+    if start > 0 or duration > 0 then
+        return false  -- Spell is on cooldown
+    end
+    
+    -- Only cast if we don't already have the buff
+    if HasBuff("player", NATURES_SWIFTNESS_SPELL) then
+        return false
+    end
+
+    -- Check player first
+    if not UnitIsDeadOrGhost("player") and (UnitHealth("player") / UnitHealthMax("player")) * 100 <= 20 then
+        DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: EMERGENCY - Casting Nature's Swiftness (Player at %d%%)", 
+            math.floor((UnitHealth("player") / UnitHealthMax("player")) * 100)))
+        CastSpellByName(NATURES_SWIFTNESS_SPELL)
+        return true
+    end
+
+    -- Check party members
+    for i = 1, 4 do
+        local unit = "party"..i
+        if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and IsInRange(unit) and 
+           (UnitHealth(unit) / UnitHealthMax(unit)) * 100 <= 20 then
+            DEFAULT_CHAT_FRAME:AddMessage(format("Dribble: EMERGENCY - Casting Nature's Swiftness (%s at %d%%)", 
+                UnitName(unit), math.floor((UnitHealth(unit) / UnitHealthMax(unit)) * 100)))
+            CastSpellByName(NATURES_SWIFTNESS_SPELL)
             return true
         end
     end
@@ -1013,6 +1059,8 @@ local function DoDribbleActions()
     if UnitExists("target") and IsTargetGouged() then
         if HandleGougedTarget() then return end
     end
+
+    if CheckEmergencyHeal() then return end
     
     -- Check for poison debuffs
     if CheckAbolishPoison() then return end
