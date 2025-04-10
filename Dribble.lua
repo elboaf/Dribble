@@ -55,8 +55,9 @@ local HEALING_TOUCH_RANKS = {
     { name = "Healing Touch(Rank 1)", amount = 55, mana = 25 },
     { name = "Healing Touch(Rank 2)", amount = 119, mana = 55 },
     { name = "Healing Touch(Rank 3)", amount = 253, mana = 110 },
-    { name = "Healing Touch(Rank 4)", amount = 456, mana = 185 },
-    { name = "Healing Touch(Rank 5)", amount = 650, mana = 264 }
+    { name = "Healing Touch(Rank 4)", amount = 459, mana = 185 },
+    { name = "Healing Touch(Rank 5)", amount = 712, mana = 264 },
+    { name = "Healing Touch(Rank 6)", amount = 894, mana = 314 }
 }
 
 local REGROWTH_RANKS = {
@@ -740,7 +741,7 @@ local function CheckEmergencyHeal()
     end
 
     -- Check player first
-    if not UnitIsDeadOrGhost("player") and (UnitHealth("player") / UnitHealthMax("player")) * 100 <= 20 then
+    if not UnitIsDeadOrGhost("player") and (UnitHealth("player") / UnitHealthMax("player")) * 100 <= 40 then
         DebugMessage(format("EMERGENCY - Casting Nature's Swiftness (Player at %d%%)", 
             math.floor((UnitHealth("player") / UnitHealthMax("player")) * 100)))
         CastSpellByName(NATURES_SWIFTNESS_SPELL)
@@ -751,7 +752,7 @@ local function CheckEmergencyHeal()
     for i = 1, 4 do
         local unit = "party"..i
         if UnitExists(unit) and not UnitIsDeadOrGhost(unit) and IsInRange(unit) and 
-           (UnitHealth(unit) / UnitHealthMax(unit)) * 100 <= 20 then
+           (UnitHealth(unit) / UnitHealthMax(unit)) * 100 <= 40 then
             DebugMessage(format("EMERGENCY - Casting Nature's Swiftness (%s at %d%%)", 
                 UnitName(unit), math.floor((UnitHealth(unit) / UnitHealthMax(unit)) * 100)))
             CastSpellByName(NATURES_SWIFTNESS_SPELL)
@@ -1095,27 +1096,6 @@ local function DoDribbleActions()
         return
     end
 
-    -- Buff checks (player, party, and pets)
-    if not IsInForm(PROWL_TEXTURE) then
-        -- Buff player first
-        if BuffUnit("player") then return end
-        
-        -- Buff party members
-        for i=1,4 do
-            local unit = "party"..i
-            if BuffUnit(unit) then return end
-        end
-        
-        -- Buff pets if enabled
-        if buffPets then
-            for i=1,4 do
-                local petUnit = "partypet"..i
-                if UnitExists(petUnit) and not UnitIsDeadOrGhost(petUnit) and BuffUnit(petUnit) then
-                    return
-                end
-            end
-        end
-    end
 
     -- In temporary DPS mode (after leaving cat form to heal)
     if tempDPSMode then
@@ -1224,6 +1204,27 @@ local function DoDribbleActions()
         DebugMessage("Entering cat form (fallback)")
         CastSpellByName(CAT_FORM_SPELL)
         return
+    end
+    -- Buff checks (player, party, and pets)
+    if not IsInForm(PROWL_TEXTURE) then
+        -- Buff player first
+        if BuffUnit("player") then return end
+        
+        -- Buff party members
+        for i=1,4 do
+            local unit = "party"..i
+            if BuffUnit(unit) then return end
+        end
+        
+        -- Buff pets if enabled
+        if buffPets then
+            for i=1,4 do
+                local petUnit = "partypet"..i
+                if UnitExists(petUnit) and not UnitIsDeadOrGhost(petUnit) and BuffUnit(petUnit) then
+                    return
+                end
+            end
+        end
     end
 end
 
